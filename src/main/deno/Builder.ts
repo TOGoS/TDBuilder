@@ -65,9 +65,13 @@ function getRuleBuildFunction(rule:BuildRule, targetName:string) : BuildFunction
 	return undefined;
 }
 
-interface BuilderOptions {
+/**
+ * Builder constructor options.
+ */
+export interface BuilderOptions {
 	/** BuildRules, keyed by target name */
 	rules? : {[targetName:string]: BuildRule},
+	/** The logger that the builder will use.  Defaults to {@link NULL_LOGGER} */
 	logger? : Logger,
 	/** List of targets that should always be built */
 	globalPrerequisiteNames? : string[],
@@ -75,6 +79,11 @@ interface BuilderOptions {
 	defaultTargetNames? : string[],
 }
 
+/**
+ * The thing that builds.
+ * After constructing, call {@link Builder#build}( targetName ) to build a specific target,
+ * or {@link Builder#processCommandLine}( args ) to run based on command-line arguments.
+ */
 export default class Builder implements MiniBuilder {
 	/**
 	 * List of things to always consider prereqs,
@@ -195,6 +204,10 @@ export default class Builder implements MiniBuilder {
 		});
 	}
 	
+	/**
+	 * Process command-line arguments.
+	 * Returns a rejected promise if there are problems.
+	 */
 	public processArgsAndBuild(args:string[]):Promise<void> {
 		let buildList = [];
 		let operation = 'build';
@@ -257,6 +270,14 @@ export default class Builder implements MiniBuilder {
 		}
 	}
 	
+	/**
+	 * Process command-line options,
+	 * duimping any error messages to console.error and
+	 * returning the appropriate exit code given the result of trying to build,
+	 * which it is recommended you pass to Deno.exit.
+	 * @param {string[]} argv arguments to the program
+	 * @returns {Promise<number>} suggested exit code
+	 */
 	public processCommandLine(argv:string[]) : Promise<number> {
 		return this.processArgsAndBuild(argv).then( () => {
 			this.logger.log("Build completed");
