@@ -17,8 +17,8 @@ export interface BuildContext {
 
 export interface BuildRule {
 	description?: string;
-	/** an async iterable list of names of targets that must be built before this build rule can be invokled */
-	prereqs?: AsyncIterable<string>;
+	/** a list of names of targets that must be built before this build rule can be invokled */
+	prereqs?: string[]|AsyncIterable<string>;
 
 	// Function to invoke
 	invoke? : BuildFunction;
@@ -61,59 +61,80 @@ function getRuleBuildFunction(rule:BuildRule, targetName:string) : BuildFunction
 	return undefined;
 }
 
+interface BuilderOptions {
+	/** Build rules, keyed by target name */
+	rules? : {[targetName:string]: BuildRule},
+	logger? : Logger,
+	/** List of targets that should always be built */
+	globalPrerequisites? : string[],
+}
+
 export default class Builder implements MiniBuilder {
 	/**
 	 * List of things to always consider prereqs,
 	 * such as the build script itself.
 	 */
-	public globalPrereqs:string[] = [];
-
-	protected logger:Logger = NULL_LOGGER;
+	public globalPrereqs:string[];
+	protected buildRules : {[targetName:string]: BuildRule};
+	
+	protected logger:Logger;
 	protected buildPromises:{[name:string]: Promise<BuildResult>} = {};
 	public defaultTargetNames:string[] = [];
-
-	public constructor(public targets:{[name:string]: BuildRule}={}) {
+	
+	public constructor(opts:BuilderOptions={}) {
+		this.buildRules = opts.rules || {};
+		this.logger = opts.logger || NULL_LOGGER;
+		this.globalPrereqs = opts.globalPrerequisites || [];
 	}
-
+	
 	/** Here so you can override it */
 	protected fetchGeneratedTargets():Promise<{[name:string]:BuildRule}> {
 		return Promise.resolve({});
 	}
-
+	
 	protected allTargetsPromise:Promise<{[name:string]:BuildRule}>|undefined = undefined;
-	protected async fetchAllTargets() : Promise<{[name:string]:BuildRule}> {
+	protected async fetchAllBuildRules() : Promise<{[name:string]:BuildRule}> {
 		if( this.allTargetsPromise ) return this.allTargetsPromise;
 		
 		const allTargets:{[name:string]:BuildRule} = {};
-		for( const n in this.targets ) allTargets[n] = this.targets[n];
+		for( const n in this.buildRules ) allTargets[n] = this.buildRules[n];
 		const generatedTargets = await this.fetchGeneratedTargets();
 		for( const n in generatedTargets ) allTargets[n] = generatedTargets[n];
 		return allTargets;
 	}
-
+	
 	protected fetchBuildRuleForTarget( targetName:string ):Promise<BuildRule> {
-		return this.fetchAllTargets().then( (targets) => targets[targetName] );
+		return this.fetchAllBuildRules().then( (targets) => targets[targetName] );
 	}
-
+	
 	protected async buildTarget( targetName:string, rule:BuildRule, stackTrace:string[] ):Promise<BuildResult> {
 		let targetMtime = await mtimeR(targetName, -Infinity).catch( (e:Error) => {
 			if( e.name == "NotFound" ) return -Infinity;
 			return Promise.reject(e);
 		});
 		const prereqStackTrace = stackTrace.concat( targetName )
+		
 		const prereqNames:string[] = [];
-		let prereqsBuilt = Promise.resolve(-Infinity);
+		for( const prereqName of this.globalPrereqs ) {
+			prereqNames.push(prereqName);
+		}
 		if( rule.prereqs ) {
 			for await(const prereqName of rule.prereqs ) {
 				prereqNames.push(prereqName);
-				const prereqBuildPromise = this.build(prereqName, prereqStackTrace);
-				prereqsBuilt = prereqsBuilt.then(async latest => {
-					const prereqArtifact = await prereqBuildPromise;
-					return Math.max(latest, prereqArtifact.mtime);
-				});
 			}
 		}
+		
+		let prereqsBuilt = Promise.resolve(-Infinity);
+		for( const prereqName of prereqNames ) {
+			const prereqBuildPromise = this.build(prereqName, prereqStackTrace);
+			prereqsBuilt = prereqsBuilt.then(async latest => {
+				const prereqArtifact = await prereqBuildPromise;
+				return Math.max(latest, prereqArtifact.mtime);
+			});
+		}
+		
 		const latestPrereqMtime = await prereqsBuilt;
+		
 		if( targetMtime == -Infinity || latestPrereqMtime > targetMtime ) {
 			this.logger.log("Building "+targetName+"...");
 			const buildFunction = getRuleBuildFunction(rule, targetName);
@@ -144,12 +165,12 @@ export default class Builder implements MiniBuilder {
 		} else {
 			this.logger.log(targetName+" is already up-to-date");
 		}
-
+		
 		return {
 			mtime: targetMtime
 		};
 	}
-
+	
 	public build( targetName:string, stackTrace:string[] ) : Promise<BuildResult> {
 		if( this.buildPromises[targetName] != undefined ) return this.buildPromises[targetName];
 		
@@ -166,7 +187,7 @@ export default class Builder implements MiniBuilder {
 			}
 		});
 	}
-
+	
 	public processArgsAndBuild(args:string[]):Promise<void> {
 		let buildList = [];
 		let operation = 'build';
@@ -198,11 +219,11 @@ export default class Builder implements MiniBuilder {
 		}
 		
 		if( operation == 'list-targets' ) {
-			return this.fetchAllTargets().then( (targets):void => {
+			return this.fetchAllBuildRules().then( (targets):void => {
 				for( const n in targets ) console.log(n);
 			});
 		} else if( operation == 'describe-targets' ) {
-			return this.fetchAllTargets().then( (targets):void => {
+			return this.fetchAllBuildRules().then( (targets):void => {
 				// TODO: Print prettier and allowing for multi-line descriptions
 				for( const targetName in targets ) {
 					const target = targets[targetName];
@@ -228,7 +249,7 @@ export default class Builder implements MiniBuilder {
 			return Promise.reject(new Error("Bad operation: '"+operation+"'"));
 		}
 	}
-
+	
 	public processCommandLine(argv:string[]) : Promise<number> {
 		return this.processArgsAndBuild(argv).then( () => {
 			this.logger.log("Build completed");
