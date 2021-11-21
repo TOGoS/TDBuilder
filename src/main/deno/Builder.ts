@@ -17,16 +17,20 @@ export interface BuildContext {
 
 export interface BuildRule {
 	description?: string;
-	/** a list of names of targets that must be built before this build rule can be invokled */
+	/** a list of names of targets that must be built before this build rule can be invoked */
 	prereqs?: string[]|AsyncIterable<string>;
 
-	// Function to invoke
+	/** Function to invoke to build the target */
 	invoke? : BuildFunction;
-	// Command to run as an alternative to invoke
+	/** An alternative to invoke: a system command to be run */
 	cmd?: string[],
 
-	// Metadata to allow Builder to automatically fix existence or mtime
+	// Metadata to allow Builder to automatically fix existence or mtime:
+
+	/** If false, the target will be removed if the build rule fails */
 	keepOnFailure?: boolean;
+	/** If true, builder will `touch $targetName` after building it
+	 *  to ensure that it cannot be mistaken as not having been updated */
 	isDirectory?: boolean;
 }
 
@@ -62,11 +66,13 @@ function getRuleBuildFunction(rule:BuildRule, targetName:string) : BuildFunction
 }
 
 interface BuilderOptions {
-	/** Build rules, keyed by target name */
+	/** BuildRules, keyed by target name */
 	rules? : {[targetName:string]: BuildRule},
 	logger? : Logger,
 	/** List of targets that should always be built */
-	globalPrerequisites? : string[],
+	globalPrerequisiteNames? : string[],
+	/** Names of targets that should be assumed when none are specified on the command-line */
+	defaultTargetNames? : string[],
 }
 
 export default class Builder implements MiniBuilder {
@@ -74,17 +80,18 @@ export default class Builder implements MiniBuilder {
 	 * List of things to always consider prereqs,
 	 * such as the build script itself.
 	 */
-	public globalPrereqs:string[];
+	protected globalPrereqs:string[];
+	protected defaultTargetNames:string[];
 	protected buildRules : {[targetName:string]: BuildRule};
-	
 	protected logger:Logger;
+
 	protected buildPromises:{[name:string]: Promise<BuildResult>} = {};
-	public defaultTargetNames:string[] = [];
 	
 	public constructor(opts:BuilderOptions={}) {
 		this.buildRules = opts.rules || {};
 		this.logger = opts.logger || NULL_LOGGER;
-		this.globalPrereqs = opts.globalPrerequisites || [];
+		this.globalPrereqs = opts.globalPrerequisiteNames || [];
+		this.defaultTargetNames = opts.defaultTargetNames || [];
 	}
 	
 	/** Here so you can override it */
