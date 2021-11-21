@@ -40,6 +40,7 @@ export class LevelFilteringLogger implements Logger {
 }
 */
 
+/** A logger that ignores everything */
 export const NULL_LOGGER:Logger = {
 	// deno-lint-ignore no-unused-vars no-explicit-any
 	error(message?: any, ...optionalParams: any[]): void { },
