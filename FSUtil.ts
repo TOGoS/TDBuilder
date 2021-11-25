@@ -12,9 +12,21 @@ export function mkParentDirs( file:FilePath ):Promise<unknown> {
 	}
 }
 
+/*
+Too unstable!
 export function touch( fileOrDir:FilePath ) : Promise<void> {
 	const curTime = Date.now();
 	return Deno.utime(fileOrDir, curTime, curTime);
+}
+*/
+
+export function touchDir( dir:FilePath ) : Promise<void> {
+	const touchyFile = `${dir}/.touchy-touchy.txt`;
+	return Deno.writeTextFile(touchyFile,
+		"This file was written to update the modification time on the containing directory.\n"+
+		"It should have been deleted immediately.\n"+
+		"In case it was not, feel free to delete it.\n"
+	).then(() => Deno.remove(touchyFile));
 }
 
 export async function cpR( src:FilePath, dest:FilePath ):Promise<unknown> {

@@ -1,4 +1,4 @@
-import { mtimeR, touch } from './FSUtil.ts';
+import { mtimeR, touchDir } from './FSUtil.ts';
 import Logger, {NULL_LOGGER} from './Logger.ts';
 
 type BuildResult = { mtime: number };
@@ -169,7 +169,7 @@ export default class Builder implements MiniBuilder {
 				}).then( () => {
 					this.logger.log("Build "+targetName+" complete!");
 					if( rule.isDirectory ) {
-						return touch(targetName);
+						return touchDir(targetName);
 					}
 				}, (err:Error) => {
 					console.error("Error trace: "+stackTrace.join(' > ')+" > "+targetName);
