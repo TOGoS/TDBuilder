@@ -9,7 +9,7 @@ TDBuilder does not do anything by itself, but can be used by a script,
 which you might call `make.ts`, which might look something like this:
 
 ```
-import Builder from 'https://deno.land/x/tdbuilder@0.2.0/Builder.ts';
+import Builder from 'https://deno.land/x/tdbuilder@0.3.4/Builder.ts';
 
 const builder = new Builder({
 	rules: {
@@ -79,8 +79,12 @@ export interface BuildRule {
 }
 ```
 
-There is currently (as of 0.3.0) no way to indicate a build rule that builds multiple targets.
+There is currently (as of 0.3.4) no way to indicate a build rule that builds multiple targets.
 As a workaround, define one of the targets and list it as a prerequisite for the others.
+
+Rules are run in parallel as much as possible.
+Lock a mutex in `invoke()` if you want to prevent certain build steps from
+running at the same time.
 
 Normally you shouldn't need to reference `ctx.builder`,
 but you can if you need to dynamically request to build a prerequisite.
