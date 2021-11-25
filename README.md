@@ -73,14 +73,28 @@ export interface BuildRule {
 
 	/** If false, the target will be removed if the build rule fails */
 	keepOnFailure?: boolean;
-	/** If true, builder will `touch $targetName` after building it
-	 *  to ensure that it cannot be mistaken as not having been updated */
-	isDirectory?: boolean;
+	/**
+	 * What does the target name name?
+	 * - "auto" (default assumption) :: the target may be a file, a directory, or nothing.
+	 *   If a file or directory by the name does exist, its modification time will be used.
+	 *   Builder won't verify existence after invoking the build rule.
+	 * - "directory" :: it is expected that a directory matching the name of the target
+	 *   will exist after the rule is invoked, and builder will automatically (by unspecified means)
+	 *   update the modification timestamp of the directory after the rule is invoked.
+	 *   If the target does not exist after invoking the build rule, or is not a directory
+	 *   (or symlink to one), an error will be thrown.
+	 * - "file" :: the target name names a file to be created or updated,
+	 *   and if the file does not exist or is not a regular file (or symlink to one) after the rule is invoked,
+	 *   an error will be thrown.
+	 * - "phony" :: the target is assumed to not correspond with anything on the filesystem,
+	 *   and will always be run.
+	 */
+	targetType?: TargetTypeName
 }
 ```
 
 There is currently (as of 0.3.4) no way to indicate a build rule that builds multiple targets.
-As a workaround, define one of the targets and list it as a prerequisite for the others.
+As a workaround, define one of the targets (preferrably a non-phony one) and list it as a prerequisite for the others.
 
 Rules are run in parallel as much as possible.
 Lock a mutex in `invoke()` if you want to prevent certain build steps from
@@ -88,9 +102,5 @@ running at the same time.
 
 Normally you shouldn't need to reference `ctx.builder`,
 but you can if you need to dynamically request to build a prerequisite.
-
-As of 0.3.0 there is no equivalent of Make's `.PHONY`.
-A build rule will always be run if its associated target name
-does not name an existing file.
 
 Run your script with `-v` to generate some info on the console about targets being built.

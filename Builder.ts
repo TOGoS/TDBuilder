@@ -15,6 +15,8 @@ export interface BuildContext {
 	targetName: string;
 }
 
+type TargetTypeName = "directory"|"file"|"phony"|"auto";
+
 export interface BuildRule {
 	description?: string;
 	/** a list of names of targets that must be built before this build rule can be invoked */
@@ -29,8 +31,27 @@ export interface BuildRule {
 
 	/** If false, the target will be removed if the build rule fails */
 	keepOnFailure?: boolean;
-	/** If true, builder will `touch $targetName` after building it
-	 *  to ensure that it cannot be mistaken as not having been updated */
+	/**
+	 * What does the target name name?
+	 * - "auto" (default assumption) :: the target may be a file, a directory, or nothing.
+	 *   If a file or directory by the name does exist, its modification time will be used.
+	 *   Builder won't verify existence after invoking the build rule.
+	 * - "directory" :: it is expected that a directory matching the name of the target
+	 *   will exist after the rule is invoked, and builder will automatically (by unspecified means)
+	 *   update the modification timestamp of the directory after the rule is invoked.
+	 *   If the target does not exist after invoking the build rule, or is not a directory
+	 *   (or symlink to one), an error will be thrown.
+	 * - "file" :: the target name names a file to be created or updated,
+	 *   and if the file does not exist or is not a regular file (or symlink to one) after the rule is invoked,
+	 *   an error will be thrown.
+	 * - "phony" :: the target is assumed to not correspond with anything on the filesystem,
+	 *   and will always be run.
+	 */
+	targetType?: TargetTypeName
+	/**
+	 * isDirectory: true is a synonym for targetType: "directory"
+	 * It does not make sense to specify both isDirectory and targetType.
+	 */
 	isDirectory?: boolean;
 }
 
@@ -44,6 +65,14 @@ function prettyCmdArg(arg:string) : string {
 
 function prettyCmd(cmd:string[]) : string {
 	return cmd.map(prettyCmdArg).join(' ');
+}
+
+function getRuleTargetType(rule:BuildRule, targetName:string) : TargetTypeName {
+	if( rule.isDirectory !== undefined && rule.targetType !== undefined ) {
+		throw new Error(`Rule for target '${targetName}' specifies both isDirectory and targetType`);
+	}
+	if( rule.targetType !== undefined ) return rule.targetType;
+	return "auto";
 }
 
 function getRuleBuildFunction(rule:BuildRule, targetName:string) : BuildFunction|undefined {
@@ -128,13 +157,56 @@ export default class Builder implements MiniBuilder {
 	protected fetchBuildRuleForTarget( targetName:string ):Promise<BuildRule> {
 		return this.fetchAllBuildRules().then( (targets) => targets[targetName] );
 	}
+
+	protected verifyTarget( targetName:string, targetType:string ) : Promise<void> {
+		switch(targetType) {
+		case "file":
+			this.logger.log("Verifying that "+targetName+" is a regular file...");
+			return Deno.stat(targetName).then( stat => {
+				if( !stat.isFile ) {
+					return Promise.reject(`Target '${targetName}' should be a regular file, but is not`);
+				}
+			}, (err:Error) => {
+				if( err.name == "NotFound" ) {
+					return Promise.reject(`Target '${targetName}' is a file, but did not exist after building`);
+				}
+				return Promise.reject(err);
+			});
+		case "directory":
+			this.logger.log("Verifying that "+targetName+" is a directory...");
+			return Deno.stat(targetName).then( stat => {
+				if( !stat.isDirectory ) {
+					return Promise.reject(`Target '${targetName}' should be a directory, but is not`);
+				}
+			}, (err:Error) => {
+				if( err.name == "NotFound" ) {
+					return Promise.reject(`Target '${targetName}' is a file, but did not exist after building`);
+				}
+				return Promise.reject(err);
+			});
+		default:
+			this.logger.log(`${targetName}'s type = ${targetType}; doing no verification`);
+			// No verification needed for phony or auto
+			return Promise.resolve();
+		}
+	}
+
+	protected postProcessTarget(targetName:string, targetType:string) : Promise<void> {
+		switch(targetType) {
+		case "directory":
+			return touchDir(targetName);
+		default:
+			return Promise.resolve();
+		}
+	}
 	
-	protected async buildTarget( targetName:string, rule:BuildRule, stackTrace:string[] ):Promise<BuildResult> {
-		let targetMtime = await mtimeR(targetName, -Infinity).catch( (e:Error) => {
+	protected async buildTarget( targetName:string, rule:BuildRule, parentStackTrace:string[] ):Promise<BuildResult> {
+		const targetType = getRuleTargetType(rule, targetName);
+		let targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity).catch( (e:Error) => {
 			if( e.name == "NotFound" ) return -Infinity;
 			return Promise.reject(e);
 		});
-		const prereqStackTrace = stackTrace.concat( targetName )
+		const stackTrace = parentStackTrace.concat( targetName )
 		
 		const prereqNames:string[] = [];
 		for( const prereqName of this.globalPrereqs ) {
@@ -148,7 +220,7 @@ export default class Builder implements MiniBuilder {
 		
 		let prereqsBuilt = Promise.resolve(-Infinity);
 		for( const prereqName of prereqNames ) {
-			const prereqBuildPromise = this.build(prereqName, prereqStackTrace);
+			const prereqBuildPromise = this.build(prereqName, stackTrace);
 			prereqsBuilt = prereqsBuilt.then(async latest => {
 				const prereqArtifact = await prereqBuildPromise;
 				return Math.max(latest, prereqArtifact.mtime);
@@ -161,29 +233,32 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("Building "+targetName+"...");
 			const buildFunction = getRuleBuildFunction(rule, targetName);
 			if( buildFunction ) {
-				await buildFunction({
-					builder: this,
-					logger: this.logger,
-					prereqNames,
-					targetName,
-				}).then( () => {
-					this.logger.log("Build "+targetName+" complete!");
-					if( rule.isDirectory ) {
-						return touchDir(targetName);
-					}
-				}, (err:Error) => {
-					console.error("Error trace: "+stackTrace.join(' > ')+" > "+targetName);
+				try {
+					await buildFunction({
+						builder: this,
+						logger: this.logger,
+						prereqNames,
+						targetName,
+					});
+				} catch( err ) {
+					console.error("Error trace: "+stackTrace.join(' > '));
 					const rejection = Promise.reject(err);
 					if( !rule.keepOnFailure ) {
 						console.error("Removing "+targetName);
 						return Deno.remove(targetName, {recursive:true}).then(() => rejection);
 					}
 					return rejection;
-				});
-				targetMtime = await mtimeR(targetName, -Infinity);
+				}
 			} else {
 				this.logger.log(targetName+" has no build rule; assuming up-to-date");
 			}
+
+			this.logger.log("Build "+targetName+" complete!");
+
+			await this.verifyTarget(targetName, targetType);
+			await this.postProcessTarget(targetName, targetType);
+			
+			targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity);
 		} else {
 			this.logger.log(targetName+" is already up-to-date");
 		}
