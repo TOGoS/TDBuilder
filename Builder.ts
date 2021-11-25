@@ -55,8 +55,14 @@ function getRuleBuildFunction(rule:BuildRule, targetName:string) : BuildFunction
 	if( cmd ) {
 		return async (ctx:BuildContext) => {
 			ctx.logger.log(`Running \`${prettyCmd(cmd)}\`...`);
-			const proc = await Deno.run({cmd});
-			const status = await proc.status();
+			let status : Deno.ProcessStatus;
+			try {
+				const proc = await Deno.run({cmd});
+				status = await proc.status();
+			} catch( e ) {
+				const message = e.message || ""+e;
+				throw new Error(`Failed to run command: \`${prettyCmd(cmd)}\`: ${message}`);
+			}
 			if( !status.success ) {
 				throw new Error(`\`${prettyCmd(cmd)}\` exited with status ${status.code}`);
 			}
