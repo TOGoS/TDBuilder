@@ -232,13 +232,14 @@ export default class Builder implements MiniBuilder {
 			}
 		}
 		
+		const configuredLogger = this.logger;
 		if( verbosity >= 200 ) {
-			this.logger = console;
+			this.logger = configuredLogger;
 		} else if( verbosity >= 100 ) {
 			this.logger = {
 				log: () => {},
-				warn: console.warn,
-				error: console.error,
+				warn: configuredLogger.warn,
+				error: configuredLogger.error,
 			}
 		} else {
 			this.logger = NULL_LOGGER;
