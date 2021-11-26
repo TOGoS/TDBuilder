@@ -4,11 +4,15 @@ import Logger, {NULL_LOGGER} from './Logger.ts';
 type BuildResult = { mtime: number };
 type BuildFunction = (ctx:BuildContext) => Promise<void>;
 
-export interface MiniBuilder {
-	build( targetName:string, stackTrace:string[] ) : Promise<BuildResult>;
+export interface MiniBuildContext {
+	buildRuleTrace: string[];
 }
 
-export interface BuildContext {
+export interface MiniBuilder {
+	build( targetName:string, ctx:MiniBuildContext ) : Promise<BuildResult>;
+}
+
+export interface BuildContext extends MiniBuildContext {
 	builder: MiniBuilder;
 	logger: Logger;
 	prereqNames: string[];
@@ -29,7 +33,7 @@ export interface BuildRule {
 
 	// Metadata to allow Builder to automatically fix existence or mtime:
 
-	/** If false, the target will be removed if the build rule fails */
+	/** Unless set to true, the target will be removed if the build rule fails */
 	keepOnFailure?: boolean;
 	/**
 	 * What does the target name name?
@@ -76,13 +80,40 @@ function getRuleTargetType(rule:BuildRule, targetName:string) : TargetTypeName {
 	return "auto";
 }
 
-function getRuleBuildFunction(rule:BuildRule, targetName:string) : BuildFunction|undefined {
+function rewriteCommand(cmd:string[], ctx:BuildContext) : string[] {
+	const rewritten:string[] = [];
+	for( const arg of cmd ) {
+		let m : RegExpExecArray|null;
+		if( (m = /^tdb:literal:(.*)$/.exec(arg)) !== null ) {
+			rewritten.push(m[1]);
+		} else if( (m = /^tdb:target$/.exec(arg)) !== null ) {
+			rewritten.push(ctx.targetName);
+		} else if( (m = /^tdb:prereq$/.exec(arg)) !== null ) {
+			if( ctx.prereqNames.length < 1 ) {
+				throw new Error(`Can't evaluate argument ${arg}: no prereqs for target '${ctx.targetName}'`);
+			}
+			rewritten.push(ctx.prereqNames[0]);
+		} else if( (m = /^tdb:prereqs$/.exec(arg)) !== null ) {
+			for( const prereq of ctx.prereqNames ) {
+				rewritten.push(prereq);
+			}
+		} else if( (m = /^tdb:.*$/.exec(arg)) !== null ) {
+			throw new Error(`Unrecognized 'tdb:' argument in command: '${arg}'`);
+		} else {
+			rewritten.push(arg);
+		}
+	}
+	return rewritten;
+}
+
+function getRuleBuildFunction(rule:BuildRule, ctx:BuildContext) : BuildFunction|undefined {
 	if( rule.cmd && rule.invoke ) {
-		throw new Error(`Rule for target '${targetName}' indicates both invoke() and a cmd!`);
+		throw new Error(`Rule for target '${ctx.targetName}' indicates both invoke() and a cmd!`);
 	}
 	if( rule.invoke ) return rule.invoke;
-	const cmd = rule.cmd;
-	if( cmd ) {
+	const rawCmd = rule.cmd;
+	if( rawCmd ) {
+		const cmd = rewriteCommand(rawCmd, ctx);
 		return async (ctx:BuildContext) => {
 			ctx.logger.log(`Running \`${prettyCmd(cmd)}\`...`);
 			let status : Deno.ProcessStatus;
@@ -201,27 +232,29 @@ export default class Builder implements MiniBuilder {
 		}
 	}
 	
-	protected async buildTarget( targetName:string, rule:BuildRule, parentStackTrace:string[] ):Promise<BuildResult> {
+	protected async buildTarget( targetName:string, rule:BuildRule, parentBuildRuleTrace:string[] ):Promise<BuildResult> {
 		const targetType = getRuleTargetType(rule, targetName);
 		let targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity).catch( (e:Error) => {
 			if( e.name == "NotFound" ) return -Infinity;
 			return Promise.reject(e);
 		});
-		const stackTrace = parentStackTrace.concat( targetName )
+		const buildRuleTrace = parentBuildRuleTrace.concat( targetName )
 		
 		const prereqNames:string[] = [];
-		for( const prereqName of this.globalPrereqs ) {
-			prereqNames.push(prereqName);
-		}
 		if( rule.prereqs ) {
+			// Rule's explicit prereqs must be first in
+			// case they want to refer to them from the build function
 			for await(const prereqName of rule.prereqs ) {
 				prereqNames.push(prereqName);
 			}
 		}
+		for( const prereqName of this.globalPrereqs ) {
+			prereqNames.push(prereqName);
+		}
 		
 		let prereqsBuilt = Promise.resolve(-Infinity);
 		for( const prereqName of prereqNames ) {
-			const prereqBuildPromise = this.build(prereqName, stackTrace);
+			const prereqBuildPromise = this.build(prereqName, {buildRuleTrace});
 			prereqsBuilt = prereqsBuilt.then(async latest => {
 				const prereqArtifact = await prereqBuildPromise;
 				return Math.max(latest, prereqArtifact.mtime);
@@ -231,18 +264,20 @@ export default class Builder implements MiniBuilder {
 		const latestPrereqMtime = await prereqsBuilt;
 		
 		if( targetMtime == -Infinity || latestPrereqMtime > targetMtime ) {
+			const ctx : BuildContext = {
+				builder: this,
+				logger: this.logger,
+				prereqNames,
+				targetName,
+				buildRuleTrace
+			};
 			this.logger.log("Building "+targetName+"...");
-			const buildFunction = getRuleBuildFunction(rule, targetName);
+			const buildFunction = getRuleBuildFunction(rule, ctx);
 			if( buildFunction ) {
 				try {
-					await buildFunction({
-						builder: this,
-						logger: this.logger,
-						prereqNames,
-						targetName,
-					});
+					await buildFunction(ctx);
 				} catch( err ) {
-					console.error("Error trace: "+stackTrace.join(' > '));
+					console.error("Error trace: "+buildRuleTrace.join(' > '));
 					const rejection = Promise.reject(err);
 					if( !rule.keepOnFailure ) {
 						console.error("Removing "+targetName);
@@ -269,7 +304,7 @@ export default class Builder implements MiniBuilder {
 		};
 	}
 	
-	public build( targetName:string, stackTrace:string[] ) : Promise<BuildResult> {
+	public build( targetName:string, ctx:MiniBuildContext ) : Promise<BuildResult> {
 		if( this.buildPromises[targetName] != undefined ) return this.buildPromises[targetName];
 		
 		return this.buildPromises[targetName] = this.fetchBuildRuleForTarget(targetName).then( rule => {
@@ -281,7 +316,7 @@ export default class Builder implements MiniBuilder {
 					return Promise.reject(new Error(targetName+" does not exist and I don't know how to build it."));
 				});
 			} else {
-				return this.buildTarget(targetName, rule, stackTrace);
+				return this.buildTarget(targetName, rule, ctx.buildRuleTrace);
 			}
 		});
 	}
@@ -345,7 +380,7 @@ export default class Builder implements MiniBuilder {
 			}
 			const buildProms = [];
 			for( const i in buildList ) {
-				buildProms.push(this.build(buildList[i], ["argv["+i+"]"]));
+				buildProms.push(this.build(buildList[i], {buildRuleTrace: ["argv["+i+"]"]}));
 			}
 			return Promise.all(buildProms).then( () => {} );
 		} else {
