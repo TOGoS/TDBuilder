@@ -20,7 +20,7 @@ type TargetTypeName = "directory"|"file"|"phony"|"auto";
 export interface BuildRule {
 	description?: string;
 	/** a list of names of targets that must be built before this build rule can be invoked */
-	prereqs?: string[]|AsyncIterable<string>;
+	prereqs?: Iterable<string>|AsyncIterable<string>;
 
 	/** Function to invoke to build the target */
 	invoke? : BuildFunction;
