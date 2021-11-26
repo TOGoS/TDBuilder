@@ -49,6 +49,7 @@ export interface BuildRule {
 	 */
 	targetType?: TargetTypeName
 	/**
+	 * @deprecated - use targetType, instead
 	 * isDirectory: true is a synonym for targetType: "directory"
 	 * It does not make sense to specify both isDirectory and targetType.
 	 */
