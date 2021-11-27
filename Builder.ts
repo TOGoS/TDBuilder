@@ -5,7 +5,7 @@ export type BuildResult = { mtime: number };
 
 export type BuildFunction = (ctx:BuildContext) => Promise<void>;
 
-export type BuildWrapper = (cb:(ctx:BuildContext)=>Promise<void>) => Promise<void>;
+export type BuildFunctionTransformer = (cb:BuildFunction) => BuildFunction;
 
 export interface MiniBuildContext {
 	buildRuleTrace: string[];
@@ -24,7 +24,7 @@ export interface BuildContext extends MiniBuildContext {
 
 type TargetTypeName = "directory"|"file"|"phony"|"auto";
 
-const NOOP_WRAPPER:BuildWrapper = (cb:(ctx:BuildContext)=>Promise<void>, ctx:BuildContext) => cb(ctx);
+const NOOP_BUILD_FUNCTION_TRANSFORMER:BuildFunctionTransformer = (bf:BuildFunction) => bf;
 
 export interface BuildRule {
 	description?: string;
@@ -37,12 +37,16 @@ export interface BuildRule {
 	cmd?: string[],
 
 	/**
-	 * A function to call 'around' the process of invoking a build rule;
-	 * defaults to one that just delegates to the build function.
+	 * A function that will wrap the logic around running the build rule
+	 * (said logic includes transforming `cmd` to a BuildFunction,
+	 * built-in checks and logging).
+	 *
 	 * May be used e.g. to lock a mutex before a rule is invoked
 	 * and release it afterwards.
+	 * 
+	 * Defaults to the identity function.
 	 */
-	wrapper?: BuildWrapper,
+	buildFunctionTransformer?: BuildFunctionTransformer,
 
 	// Metadata to allow Builder to automatically fix existence or mtime:
 
@@ -145,11 +149,10 @@ function getRuleBuildFunction(rule:BuildRule, ctx:BuildContext) : BuildFunction|
 	return undefined;
 }
 
-function getRuleBuildWrapper(rule:BuildRule, _ctx:BuildContext) : BuildWrapper {
-	if( rule.wrapper ) return rule.wrapper;
-	return NOOP_WRAPPER;
+function getRuleBuildFunctionTransformer(rule:BuildRule, _ctx:BuildContext) : BuildFunctionTransformer {
+	if( rule.buildFunctionTransformer ) return rule.buildFunctionTransformer;
+	return NOOP_BUILD_FUNCTION_TRANSFORMER;
 }
-
 
 /**
  * Builder constructor options.
@@ -291,9 +294,9 @@ export default class Builder implements MiniBuilder {
 				buildRuleTrace
 			};
 			const buildFunction = getRuleBuildFunction(rule, ctx);
-			const wrapper = getRuleBuildWrapper(rule, ctx);
-			if( buildFunction ) {
-				wrapper(async (ctx:BuildContext) => {
+			const buildWrapper = getRuleBuildFunctionTransformer(rule, ctx);
+			const wrappedBuildFunction = buildWrapper(async (ctx:BuildContext) => {
+				if( buildFunction ) {
 					try {
 						this.logger.log("Building "+targetName+"...");
 						await buildFunction(ctx);
@@ -307,17 +310,15 @@ export default class Builder implements MiniBuilder {
 						}
 						return rejection;
 					}
-				}, ctx);
-			} else {
-				this.logger.log(targetName+" has no build rule; assuming up-to-date");
-			}
-
+				} else {
+					this.logger.log(targetName+" has no build rule; assuming up-to-date");
+				}
+				await this.verifyTarget(targetName, targetType);
+				await this.postProcessTarget(targetName, targetType);
+			});
+			await wrappedBuildFunction(ctx);
 			
-
-			await this.verifyTarget(targetName, targetType);
-			await this.postProcessTarget(targetName, targetType);
-			
-			targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity);
+			targetMtime = targetType == "phony" ? Infinity : await mtimeR(targetName, -Infinity);
 		} else {
 			this.logger.log(targetName+" is already up-to-date");
 		}
