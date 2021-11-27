@@ -1,8 +1,11 @@
 import { mtimeR, touchDir } from './FSUtil.ts';
 import Logger, {NULL_LOGGER} from './Logger.ts';
 
-type BuildResult = { mtime: number };
-type BuildFunction = (ctx:BuildContext) => Promise<void>;
+export type BuildResult = { mtime: number };
+
+export type BuildFunction = (ctx:BuildContext) => Promise<void>;
+
+export type BuildWrapper = (cb:(ctx:BuildContext)=>Promise<void>) => Promise<void>;
 
 export interface MiniBuildContext {
 	buildRuleTrace: string[];
@@ -21,6 +24,8 @@ export interface BuildContext extends MiniBuildContext {
 
 type TargetTypeName = "directory"|"file"|"phony"|"auto";
 
+const NOOP_WRAPPER:BuildWrapper = (cb:(ctx:BuildContext)=>Promise<void>, ctx:BuildContext) => cb(ctx);
+
 export interface BuildRule {
 	description?: string;
 	/** a list of names of targets that must be built before this build rule can be invoked */
@@ -30,6 +35,14 @@ export interface BuildRule {
 	invoke? : BuildFunction;
 	/** An alternative to invoke: a system command to be run */
 	cmd?: string[],
+
+	/**
+	 * A function to call 'around' the process of invoking a build rule;
+	 * defaults to one that just delegates to the build function.
+	 * May be used e.g. to lock a mutex before a rule is invoked
+	 * and release it afterwards.
+	 */
+	wrapper?: BuildWrapper,
 
 	// Metadata to allow Builder to automatically fix existence or mtime:
 
@@ -131,6 +144,12 @@ function getRuleBuildFunction(rule:BuildRule, ctx:BuildContext) : BuildFunction|
 	}
 	return undefined;
 }
+
+function getRuleBuildWrapper(rule:BuildRule, _ctx:BuildContext) : BuildWrapper {
+	if( rule.wrapper ) return rule.wrapper;
+	return NOOP_WRAPPER;
+}
+
 
 /**
  * Builder constructor options.
@@ -271,25 +290,29 @@ export default class Builder implements MiniBuilder {
 				targetName,
 				buildRuleTrace
 			};
-			this.logger.log("Building "+targetName+"...");
 			const buildFunction = getRuleBuildFunction(rule, ctx);
+			const wrapper = getRuleBuildWrapper(rule, ctx);
 			if( buildFunction ) {
-				try {
-					await buildFunction(ctx);
-				} catch( err ) {
-					console.error("Error trace: "+buildRuleTrace.join(' > '));
-					const rejection = Promise.reject(err);
-					if( !rule.keepOnFailure ) {
-						console.error("Removing "+targetName);
-						return Deno.remove(targetName, {recursive:true}).then(() => rejection);
+				wrapper(async (ctx:BuildContext) => {
+					try {
+						this.logger.log("Building "+targetName+"...");
+						await buildFunction(ctx);
+						this.logger.log("Build "+targetName+" complete!");
+					} catch( err ) {
+						console.error("Error trace: "+buildRuleTrace.join(' > '));
+						const rejection = Promise.reject(err);
+						if( !rule.keepOnFailure ) {
+							console.error("Removing "+targetName);
+							return Deno.remove(targetName, {recursive:true}).then(() => rejection);
+						}
+						return rejection;
 					}
-					return rejection;
-				}
+				}, ctx);
 			} else {
 				this.logger.log(targetName+" has no build rule; assuming up-to-date");
 			}
 
-			this.logger.log("Build "+targetName+" complete!");
+			
 
 			await this.verifyTarget(targetName, targetType);
 			await this.postProcessTarget(targetName, targetType);
