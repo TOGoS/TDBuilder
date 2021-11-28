@@ -54,13 +54,13 @@ There is currently (as of 0.5.0) no way to indicate a build rule that builds mul
 As a workaround, define one of the targets (preferrably a non-phony one) and list it as a prerequisite for the others.
 
 Rules are run in parallel as much as possible.
-If you with to prevent some build rules from running simultaneously,
-you can use a mutex (implementation detail left to you for now),
+If you wish to prevent some build rules from running simultaneously,
+you can use a mutex (implementation of which is for now left to you),
 either in `invoke()` or added by the `buildFunctionTransformer`.
 
 Normally you shouldn't need to reference `ctx.builder`,
 but you can if you need to dynamically request to build a prerequisite.
 
-Targets are only ever built once per Builder instance.
+Targets are built at most once per Builder instance.
 
 Run your script with `-v` to generate some info on the console about targets being built.
