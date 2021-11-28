@@ -75,3 +75,14 @@ export async function mtimeR(path:string, onNotFound:number|"error", returnInfin
 	await dp;
 	return latest;
 }
+
+/** Make a file (or directory if options.recursive) be removed, even if it didn't exist */
+export function makeRemoved(path:string|URL, options?: Deno.RemoveOptions) : Promise<void> {
+	return Deno.remove(path, options).catch( err => {
+		if( err.name == 'NotFound' ) {
+			// This is fine.
+		} else {
+			return Promise.reject(err);
+		}
+	})
+}

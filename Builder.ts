@@ -1,4 +1,4 @@
-import { mtimeR, touchDir } from './FSUtil.ts';
+import { mtimeR, touchDir, makeRemoved } from './FSUtil.ts';
 import Logger, {NULL_LOGGER} from './Logger.ts';
 
 export type BuildResult = { mtime: number };
@@ -302,11 +302,12 @@ export default class Builder implements MiniBuilder {
 						await buildFunction(ctx);
 						this.logger.log("Build "+targetName+" complete!");
 					} catch( err ) {
+						console.error(`Error while building ${targetName}:`, err);
 						console.error("Error trace: "+buildRuleTrace.join(' > '));
 						const rejection = Promise.reject(err);
 						if( !rule.keepOnFailure ) {
 							console.error("Removing "+targetName);
-							return Deno.remove(targetName, {recursive:true}).then(() => rejection);
+							return makeRemoved(targetName, {recursive:true}).then(() => rejection);
 						}
 						return rejection;
 					}
