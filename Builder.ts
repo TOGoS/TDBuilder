@@ -40,7 +40,7 @@ export interface BuildRule {
 	 * A function that will wrap the logic around running the build rule
 	 * (said logic includes transforming `cmd` to a BuildFunction,
 	 * built-in checks and logging).
-	 *
+	 * 
 	 * May be used e.g. to lock a mutex before a rule is invoked
 	 * and release it afterwards.
 	 * 
