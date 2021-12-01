@@ -228,7 +228,7 @@ export default class Builder implements MiniBuilder {
 				}
 			}, (err:Error) => {
 				if( err.name == "NotFound" ) {
-					return Promise.reject(new BuildError(`Target '${targetName}' is a file, but did not exist after building`, ctx.buildRuleTrace));
+					return Promise.reject(new BuildError(`Target '${targetName}' should be a regular file, but did not exist after building`, ctx.buildRuleTrace));
 				}
 				return Promise.reject(err);
 			});
@@ -240,7 +240,7 @@ export default class Builder implements MiniBuilder {
 				}
 			}, (err:Error) => {
 				if( err.name == "NotFound" ) {
-					return Promise.reject(new BuildError(`Target '${targetName}' is a file, but did not exist after building`, ctx.buildRuleTrace));
+					return Promise.reject(new BuildError(`Target '${targetName}' should be a directory, but did not exist after building`, ctx.buildRuleTrace));
 				}
 				return Promise.reject(err);
 			});
