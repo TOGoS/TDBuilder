@@ -89,9 +89,9 @@ function prettyCmd(cmd:string[]) : string {
 	return cmd.map(prettyCmdArg).join(' ');
 }
 
-function getRuleTargetType(rule:BuildRule, targetName:string) : TargetTypeName {
+function getRuleTargetType(rule:BuildRule, targetName:string, ctx:BuildContext) : TargetTypeName {
 	if( rule.isDirectory !== undefined && rule.targetType !== undefined ) {
-		throw new Error(`Rule for target '${targetName}' specifies both isDirectory and targetType`);
+		throw new BuildError(`Rule for target '${targetName}' specifies both isDirectory and targetType`, ctx.buildRuleTrace);
 	}
 	if( rule.targetType !== undefined ) return rule.targetType;
 	return "auto";
@@ -107,7 +107,7 @@ function rewriteCommand(cmd:string[], ctx:BuildContext) : string[] {
 			rewritten.push(ctx.targetName);
 		} else if( (m = /^tdb:prereq$/.exec(arg)) !== null ) {
 			if( ctx.prereqNames.length < 1 ) {
-				throw new Error(`Can't evaluate argument ${arg}: no prereqs for target '${ctx.targetName}'`);
+				throw new BuildError(`Can't evaluate argument ${arg}: no prereqs for target '${ctx.targetName}'`, ctx.buildRuleTrace);
 			}
 			rewritten.push(ctx.prereqNames[0]);
 		} else if( (m = /^tdb:prereqs$/.exec(arg)) !== null ) {
@@ -115,7 +115,7 @@ function rewriteCommand(cmd:string[], ctx:BuildContext) : string[] {
 				rewritten.push(prereq);
 			}
 		} else if( (m = /^tdb:.*$/.exec(arg)) !== null ) {
-			throw new Error(`Unrecognized 'tdb:' argument in command: '${arg}'`);
+			throw new BuildError(`Unrecognized 'tdb:' argument in command: '${arg}'`, ctx.buildRuleTrace);
 		} else {
 			rewritten.push(arg);
 		}
@@ -125,7 +125,7 @@ function rewriteCommand(cmd:string[], ctx:BuildContext) : string[] {
 
 function getRuleBuildFunction(rule:BuildRule, ctx:BuildContext) : BuildFunction|undefined {
 	if( rule.cmd && rule.invoke ) {
-		throw new Error(`Rule for target '${ctx.targetName}' indicates both invoke() and a cmd!`);
+		throw new BuildError(`Rule for target '${ctx.targetName}' indicates both invoke() and a cmd!`, ctx.buildRuleTrace);
 	}
 	if( rule.invoke ) return rule.invoke;
 	const rawCmd = rule.cmd;
@@ -139,10 +139,10 @@ function getRuleBuildFunction(rule:BuildRule, ctx:BuildContext) : BuildFunction|
 				status = await proc.status();
 			} catch( e ) {
 				const message = e.message || ""+e;
-				throw new Error(`Failed to run command: \`${prettyCmd(cmd)}\`: ${message}`);
+				throw new BuildError(`Failed to run command: \`${prettyCmd(cmd)}\`: ${message}`, ctx.buildRuleTrace);
 			}
 			if( !status.success ) {
-				throw new Error(`\`${prettyCmd(cmd)}\` exited with status ${status.code}`);
+				throw new BuildError(`\`${prettyCmd(cmd)}\` exited with status ${status.code}`, ctx.buildRuleTrace);
 			}
 		}
 	}
@@ -166,6 +166,12 @@ export interface BuilderOptions {
 	globalPrerequisiteNames? : string[],
 	/** Names of targets that should be assumed when none are specified on the command-line */
 	defaultTargetNames? : string[],
+}
+
+class BuildError extends Error {
+	constructor(message:string, public buildTrace:string[]) {
+		super(message);
+	}
 }
 
 /**
@@ -212,17 +218,17 @@ export default class Builder implements MiniBuilder {
 		return this.fetchAllBuildRules().then( (targets) => targets[targetName] );
 	}
 
-	protected verifyTarget( targetName:string, targetType:string ) : Promise<void> {
+	protected verifyTarget( targetName:string, targetType:TargetTypeName, ctx:BuildContext ) : Promise<void> {
 		switch(targetType) {
 		case "file":
 			this.logger.log("Verifying that "+targetName+" is a regular file...");
 			return Deno.stat(targetName).then( stat => {
 				if( !stat.isFile ) {
-					return Promise.reject(new Error(`Target '${targetName}' should be a regular file, but is not`));
+					return Promise.reject(new BuildError(`Target '${targetName}' should be a regular file, but is not`, ctx.buildRuleTrace));
 				}
 			}, (err:Error) => {
 				if( err.name == "NotFound" ) {
-					return Promise.reject(new Error(`Target '${targetName}' is a file, but did not exist after building`));
+					return Promise.reject(new BuildError(`Target '${targetName}' is a file, but did not exist after building`, ctx.buildRuleTrace));
 				}
 				return Promise.reject(err);
 			});
@@ -230,11 +236,11 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("Verifying that "+targetName+" is a directory...");
 			return Deno.stat(targetName).then( stat => {
 				if( !stat.isDirectory ) {
-					return Promise.reject(new Error(`Target '${targetName}' should be a directory, but is not`));
+					return Promise.reject(new BuildError(`Target '${targetName}' should be a directory, but is not`, ctx.buildRuleTrace));
 				}
 			}, (err:Error) => {
 				if( err.name == "NotFound" ) {
-					return Promise.reject(new Error(`Target '${targetName}' is a file, but did not exist after building`));
+					return Promise.reject(new BuildError(`Target '${targetName}' is a file, but did not exist after building`, ctx.buildRuleTrace));
 				}
 				return Promise.reject(err);
 			});
@@ -255,13 +261,6 @@ export default class Builder implements MiniBuilder {
 	}
 	
 	protected async buildTarget( targetName:string, rule:BuildRule, parentBuildRuleTrace:string[] ):Promise<BuildResult> {
-		const targetType = getRuleTargetType(rule, targetName);
-		let targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity).catch( (e:Error) => {
-			if( e.name == "NotFound" ) return -Infinity;
-			return Promise.reject(e);
-		});
-		const buildRuleTrace = parentBuildRuleTrace.concat( targetName )
-		
 		const prereqNames:string[] = [];
 		if( rule.prereqs ) {
 			// Rule's explicit prereqs must be first in
@@ -273,6 +272,20 @@ export default class Builder implements MiniBuilder {
 		for( const prereqName of this.globalPrereqs ) {
 			prereqNames.push(prereqName);
 		}
+		const buildRuleTrace = parentBuildRuleTrace.concat( targetName )
+		const ctx : BuildContext = {
+			builder: this,
+			logger: this.logger,
+			prereqNames,
+			targetName,
+			buildRuleTrace
+		};
+
+		const targetType = getRuleTargetType(rule, targetName, ctx);
+		let targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity).catch( (e:Error) => {
+			if( e.name == "NotFound" ) return -Infinity;
+			return Promise.reject(e);
+		});
 		
 		let prereqsBuilt = Promise.resolve(-Infinity);
 		for( const prereqName of prereqNames ) {
@@ -286,24 +299,17 @@ export default class Builder implements MiniBuilder {
 		const latestPrereqMtime = await prereqsBuilt;
 		
 		if( targetMtime == -Infinity || latestPrereqMtime > targetMtime ) {
-			const ctx : BuildContext = {
-				builder: this,
-				logger: this.logger,
-				prereqNames,
-				targetName,
-				buildRuleTrace
-			};
 			const buildFunction = getRuleBuildFunction(rule, ctx);
 			const buildWrapper = getRuleBuildFunctionTransformer(rule, ctx);
 			const wrappedBuildFunction = buildWrapper(async (ctx:BuildContext) => {
 				if( buildFunction ) {
 					try {
-						this.logger.log("Building "+targetName+"...");
+						this.logger.log("Running build function for "+targetName+"...");
 						await buildFunction(ctx);
-						this.logger.log("Build "+targetName+" complete!");
+						this.logger.log("Build function for "+targetName+" returned without error");
 					} catch( err ) {
-						console.error(`Error while building ${targetName}:`, err);
-						console.error("Error trace: "+buildRuleTrace.join(' > '));
+						//console.error(`Error while building ${targetName}:`, err);
+						//console.error("Error trace: "+buildRuleTrace.join(' > '));
 						const rejection = Promise.reject(err);
 						if( !rule.keepOnFailure ) {
 							console.error("Removing "+targetName);
@@ -314,7 +320,7 @@ export default class Builder implements MiniBuilder {
 				} else {
 					this.logger.log(targetName+" has no build rule; assuming up-to-date");
 				}
-				await this.verifyTarget(targetName, targetType);
+				await this.verifyTarget(targetName, targetType, ctx);
 				await this.postProcessTarget(targetName, targetType);
 			});
 			await wrappedBuildFunction(ctx);
@@ -338,7 +344,7 @@ export default class Builder implements MiniBuilder {
 					this.logger.log(targetName+" exists but has no build rule; assuming up-to-date");
 					return {mtime};
 				}, _err => {
-					return Promise.reject(new Error(targetName+" does not exist and I don't know how to build it."));
+					return Promise.reject(new BuildError(targetName+" does not exist and I don't know how to build it.", ctx.buildRuleTrace));
 				});
 			} else {
 				return this.buildTarget(targetName, rule, ctx.buildRuleTrace);
@@ -396,16 +402,18 @@ export default class Builder implements MiniBuilder {
 				}
 			});
 		} else if( operation == 'build' ) {
+			let specifiedVia = "(command-line)";
 			if( buildList.length == 0 ) {
 				buildList = this.defaultTargetNames;
 				if( buildList.length == 0 ) {
 					this.logger.warn("No build target build targets.  Try with --list-targets.");
 					return Promise.resolve();
 				}
+				specifiedVia = "(default targets)"
 			}
 			const buildProms = [];
 			for( const i in buildList ) {
-				buildProms.push(this.build(buildList[i], {buildRuleTrace: ["argv["+i+"]"]}));
+				buildProms.push(this.build(buildList[i], {buildRuleTrace: [specifiedVia]}));
 			}
 			return Promise.all(buildProms).then( () => {} );
 		} else {
@@ -424,7 +432,12 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("Build completed");
 			return 0;
 		}, (err:Error) => {
-			console.error("Error!", err.message, err.stack);
+			if( err instanceof BuildError ) {
+				console.error(`Error while building ${err.buildTrace[err.buildTrace.length-1] || '(nothing?)'}:`, err.stack ?? err.message);
+				console.error(`Trace: ${err.buildTrace.join(' > ')}`);
+			} else {
+				console.error("Error!", err.stack ?? err.message);
+			}
 			console.error("Build failed!");
 			return 1;
 		});
