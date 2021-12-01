@@ -218,11 +218,11 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("Verifying that "+targetName+" is a regular file...");
 			return Deno.stat(targetName).then( stat => {
 				if( !stat.isFile ) {
-					return Promise.reject(`Target '${targetName}' should be a regular file, but is not`);
+					return Promise.reject(new Error(`Target '${targetName}' should be a regular file, but is not`));
 				}
 			}, (err:Error) => {
 				if( err.name == "NotFound" ) {
-					return Promise.reject(`Target '${targetName}' is a file, but did not exist after building`);
+					return Promise.reject(new Error(`Target '${targetName}' is a file, but did not exist after building`));
 				}
 				return Promise.reject(err);
 			});
@@ -230,11 +230,11 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("Verifying that "+targetName+" is a directory...");
 			return Deno.stat(targetName).then( stat => {
 				if( !stat.isDirectory ) {
-					return Promise.reject(`Target '${targetName}' should be a directory, but is not`);
+					return Promise.reject(new Error(`Target '${targetName}' should be a directory, but is not`));
 				}
 			}, (err:Error) => {
 				if( err.name == "NotFound" ) {
-					return Promise.reject(`Target '${targetName}' is a file, but did not exist after building`);
+					return Promise.reject(new Error(`Target '${targetName}' is a file, but did not exist after building`));
 				}
 				return Promise.reject(err);
 			});
