@@ -370,7 +370,7 @@ export default class Builder implements MiniBuilder {
 				verbosity = 200;
 			} else {
 				// Make tab-completing on Windows not screw us all up!
-				buildList.push(arg.replace(/\\/,'/'));
+				buildList.push(arg.replace(/\\/g,'/'));
 			}
 		}
 		
