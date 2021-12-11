@@ -397,6 +397,8 @@ export default class Builder implements MiniBuilder {
 				operation = 'describe-targets';
 			} else if( arg == '-v' ) {
 				verbosity = 200;
+			} else if( arg == '-q' ) {
+				verbosity = 0;
 			} else {
 				// Make tab-completing on Windows not screw us all up!
 				buildList.push(arg.replace(/\\/g,'/'));
