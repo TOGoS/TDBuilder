@@ -155,6 +155,15 @@ function getRuleBuildFunctionTransformer(rule:BuildRule, _ctx:BuildContext) : Bu
 	return NOOP_BUILD_FUNCTION_TRANSFORMER;
 }
 
+type FailureFileAction = "delete"|"keep";
+
+function getFailureFileAction(rule:BuildRule) : FailureFileAction {
+	if( rule.keepOnFailure !== undefined ) return rule.keepOnFailure ? "keep" : "delete";
+
+	// By default, blow away regular files, but leave everything else alone 'for safety'
+	return rule.targetType == "file" ? "delete" : "keep";
+}
+
 /**
  * Builder constructor options.
  */
@@ -328,9 +337,12 @@ export default class Builder implements MiniBuilder {
 						//console.error(`Error while building ${targetName}:`, err);
 						//console.error("Error trace: "+buildRuleTrace.join(' > '));
 						const rejection = Promise.reject(err);
-						if( !rule.keepOnFailure ) {
+						switch( getFailureFileAction(rule) ) {
+						case "delete":
 							console.error("Removing "+targetName);
 							return makeRemoved(targetName, {recursive:true}).then(() => rejection);
+						case "keep":
+							console.log("Keeping "+targetName+" despite failure");
 						}
 						return rejection;
 					}
