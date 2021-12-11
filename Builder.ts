@@ -1,3 +1,4 @@
+// deno-lint-ignore-file no-explicit-any
 import { mtimeR, touchDir, makeRemoved } from './FSUtil.ts';
 import Logger, {NULL_LOGGER} from './Logger.ts';
 
@@ -168,8 +169,24 @@ export interface BuilderOptions {
 	defaultTargetNames? : string[],
 }
 
-class BuildError extends Error {
-	constructor(message:string, public buildTrace:string[]) {
+/**
+ * Anything, but generally an exception object,
+ * that has a build trace consisting of the names of build targets
+ * that were being built which led to the error.
+ */
+interface HasBuildTrace {
+	tdBuildTrace : string[];
+}
+
+function hasBuildTrace(x:any) : x is HasBuildTrace {
+	return Array.isArray(x.tdBuildTrace) && (x.tdBuildTrace as any[]).reduce(
+		(p:boolean, v:any) => p && typeof(v) == 'string',
+		true
+	);
+}
+
+export class BuildError extends Error implements HasBuildTrace {
+	constructor(message:string, public tdBuildTrace:string[]) {
 		super(message);
 	}
 }
@@ -432,9 +449,9 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("Build completed");
 			return 0;
 		}, (err:Error) => {
-			if( err instanceof BuildError ) {
-				console.error(`Error while building ${err.buildTrace[err.buildTrace.length-1] || '(nothing?)'}:`, err.stack ?? err.message);
-				console.error(`Trace: ${err.buildTrace.join(' > ')}`);
+			if( hasBuildTrace(err) ) {
+				console.error(`Error while building ${err.tdBuildTrace[err.tdBuildTrace.length-1] || '(nothing?)'}:`, err.stack ?? err.message);
+				console.error(`Trace: ${err.tdBuildTrace.join(' > ')}`);
 			} else {
 				console.error("Error!", err.stack ?? err.message);
 			}
