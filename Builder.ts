@@ -138,6 +138,7 @@ function getRuleBuildFunction(rule:BuildRule, ctx:BuildContext) : BuildFunction|
 			try {
 				const proc = await Deno.run({cmd});
 				status = await proc.status();
+				proc.close();
 			} catch( e ) {
 				const message = e.message || ""+e;
 				throw new BuildError(`Failed to run command: \`${prettyCmd(cmd)}\`: ${message}`, ctx.buildRuleTrace);
