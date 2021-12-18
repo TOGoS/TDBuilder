@@ -1,5 +1,3 @@
-import { RESOLVED_UNKNOWN_PROMISE } from './promises.ts';
-
 export type FilePath = string;
 
 export function mkParentDirs( file:FilePath ):Promise<unknown> {
@@ -8,7 +6,7 @@ export function mkParentDirs( file:FilePath ):Promise<unknown> {
 		const dir = comps.slice(0,comps.length-1).join('/');
 		return Deno.mkdir(dir, {recursive:true});
 	} else {
-		return RESOLVED_UNKNOWN_PROMISE;
+		return Promise.resolve();
 	}
 }
 
@@ -33,7 +31,7 @@ export async function cpR( src:FilePath, dest:FilePath ):Promise<unknown> {
 	const srcStat = await Deno.stat(src);
 	if( srcStat.isDirectory ) {
 		await Deno.mkdir(dest, {recursive:true});
-		let copyPromise = RESOLVED_UNKNOWN_PROMISE;
+		let copyPromise : Promise<unknown> = Promise.resolve();
 		for await(const entry of Deno.readDir(src)) {
 			const entryCopyPromise = cpR(src+"/"+entry.name, dest+"/"+entry.name);
 			copyPromise = copyPromise.then(() => entryCopyPromise);
