@@ -340,10 +340,10 @@ export default class Builder implements MiniBuilder {
 						const rejection = Promise.reject(err);
 						switch( getFailureFileAction(rule) ) {
 						case "delete":
-							console.error("Removing "+targetName);
+							this.logger.error("Removing "+targetName);
 							return makeRemoved(targetName, {recursive:true}).then(() => rejection);
 						case "keep":
-							console.log("Keeping "+targetName+" despite failure");
+							this.logger.log("Keeping "+targetName+" despite failure");
 						}
 						return rejection;
 					}
