@@ -1,4 +1,3 @@
-// deno-lint-ignore-file no-explicit-any
 import { mtimeR, touchDir, makeRemoved } from './FSUtil.ts';
 import Logger, {NULL_LOGGER} from './Logger.ts';
 
@@ -188,9 +187,13 @@ interface HasBuildTrace {
 	tdBuildTrace : string[];
 }
 
-function hasBuildTrace(x:any) : x is HasBuildTrace {
-	return Array.isArray(x.tdBuildTrace) && (x.tdBuildTrace as any[]).reduce(
-		(p:boolean, v:any) => p && typeof(v) == 'string',
+function mightHaveBuildTrace(x:unknown) : x is {tdBuildTrace?: unknown} {
+	return typeof(x) == 'object';
+}
+
+function hasBuildTrace(x:unknown) : x is HasBuildTrace {
+	return mightHaveBuildTrace(x) && Array.isArray(x.tdBuildTrace) && x.tdBuildTrace.reduce(
+		(p:boolean, v:unknown) => p && typeof(v) == 'string',
 		true
 	);
 }

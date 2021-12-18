@@ -2,12 +2,9 @@
  * Console-compatible logging interface.
  */
  interface Logger {
-	 // deno-lint-ignore no-explicit-any
-   error(message?: any, ...optionalParams: any[]): void;
-	// deno-lint-ignore no-explicit-any
-	warn(message?: any, ...optionalParams: any[]): void;
-	// deno-lint-ignore no-explicit-any
-   log(message?: any, ...optionalParams: any[]): void;
+   error(message?: unknown, ...optionalParams: unknown[]): void;
+	warn(message?: unknown, ...optionalParams: unknown[]): void;
+   log(message?: unknown, ...optionalParams: unknown[]): void;
 }
 
 export const VERBOSITY_SILENT   = 0;
@@ -42,12 +39,9 @@ export class LevelFilteringLogger implements Logger {
 
 /** A logger that ignores everything */
 export const NULL_LOGGER:Logger = {
-	// deno-lint-ignore no-unused-vars no-explicit-any
-	error(message?: any, ...optionalParams: any[]): void { },
-	// deno-lint-ignore no-unused-vars no-explicit-any
-	warn(message?: any, ...optionalParams: any[]): void { },
-	// deno-lint-ignore no-unused-vars no-explicit-any
-	log(message?: any, ...optionalParams: any[]): void { },
+	error(_message?: unknown, ..._optionalParams: unknown[]): void { },
+	warn(_message?: unknown, ..._optionalParams: unknown[]): void { },
+	log(_message?: unknown, ..._optionalParams: unknown[]): void { },
 }
 
 export default Logger;
