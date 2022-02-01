@@ -220,6 +220,8 @@ export default class Builder implements MiniBuilder {
 	protected logger:Logger;
 
 	protected buildPromises:{[name:string]: Promise<BuildResult>} = {};
+	protected allBuildPromisesSettled : Promise<unknown> = Promise.resolve();
+	protected isShuttingDown = false;
 	
 	public constructor(opts:BuilderOptions={}) {
 		this.buildRules = opts.rules || {};
@@ -370,8 +372,10 @@ export default class Builder implements MiniBuilder {
 	
 	public build( targetName:string, ctx:MiniBuildContext ) : Promise<BuildResult> {
 		if( this.buildPromises[targetName] != undefined ) return this.buildPromises[targetName];
+
+		if( this.isShuttingDown ) return Promise.reject(`Builder shutting down; refusing to start task to build ${targetName}`)
 		
-		return this.buildPromises[targetName] = this.fetchBuildRuleForTarget(targetName).then( rule => {
+		const bp = this.buildPromises[targetName] = this.fetchBuildRuleForTarget(targetName).then( rule => {
 			if( rule == null ) {
 				return mtimeR(targetName, "error").then( mtime => {
 					this.logger.log(targetName+" exists but has no build rule; assuming up-to-date");
@@ -383,6 +387,10 @@ export default class Builder implements MiniBuilder {
 				return this.buildTarget(targetName, rule, ctx.buildRuleTrace);
 			}
 		});
+
+		this.allBuildPromisesSettled = this.allBuildPromisesSettled.then(() => bp.then(_ => {}, _ => {}));
+
+		return bp;
 	}
 	
 	/**
@@ -455,6 +463,18 @@ export default class Builder implements MiniBuilder {
 			return Promise.reject(new Error("Bad operation: '"+operation+"'"));
 		}
 	}
+
+	public join() : Promise<void> {
+		this.logger.log("Waiting for any running tasks to settle...");
+		const settlePromise = this.allBuildPromisesSettled;
+		return settlePromise.then( () => {
+			if( this.allBuildPromisesSettled !== settlePromise ) {
+				this.logger.log("New tasks spawned while waiting; waiting for them to settle...");
+				return this.join();
+			}
+			this.logger.log("All build tasks settled.");
+		});
+	}
 	
 	/**
 	 * Process command-line options,
@@ -475,6 +495,9 @@ export default class Builder implements MiniBuilder {
 			}
 			console.error("Build failed!");
 			return 1;
+		}).finally(() => {
+			this.isShuttingDown = true;
+			return this.join()
 		});
 	}
 }
