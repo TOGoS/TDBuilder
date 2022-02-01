@@ -1,0 +1,41 @@
+*** TODO 'serial' mode - run tasks one-at-a-time
+
+Configured by builder construction or by command-line option.
+
+*** TODO Separate parsing of command-line options from running the build
+
+One use case: I want access to the logger in order to set some other things up
+before it starts building stuff!
+
+*** TODO Ability to use contexts with more stuff
+
+Like Phrebar's registry.
+I want to be able to retrieve arbitrary configured services from the context.
+Builder creates new context for each build task, so would need to be able
+to configure some context creation function.
+
+*** TODO (maybe) 'targetPath' / 'prereqPath' and/or 'projectRootDir' in context
+
+This could remove the implicit current directory and thereby
+allow builders for different projects to run in the same process.
+
+*** TODO ActiveResolver integration
+
+Maybe not built-in, but along with ability to stick arbitrary stuff in the context,
+this should be easy to do, almost as if you could just say
+
+#+BEGIN_SRC typescript
+  {
+    expression: (TDAR-recognized expression goes here)
+  }
+#+END_SRC
+
+instead of ~invoke~, similar to how ~cmd~ can be specified in stead of ~invoke~.
+Actually, ~cmd~ is often insufficient, so should probably be removed as a special case.
+
+Perhaps build rules could be (almost) arbitrary objects, and handlers could be registered
+to resolve them.
+
+*** TODO Easy way to recognize updated-ness of a file by a sidecar file
+
+*** TODO Easy way to indicate when multiple files are updated by the same build rule
