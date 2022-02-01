@@ -176,6 +176,17 @@ export interface BuilderOptions {
 	globalPrerequisiteNames? : string[],
 	/** Names of targets that should be assumed when none are specified on the command-line */
 	defaultTargetNames? : string[],
+	/** How to refer to the command-line script that is calling Builder?  For --help purposes. */
+	buildScriptName? : string,
+}
+
+type BuildOperationName = "build"|"describe-targets"|"list-targets"|"print-help";
+
+export interface BuildParameters {
+	buildOperation: BuildOperationName,
+	targetNames: string[],
+	targetsSpecifiedVia: string,
+	logger: Logger,
 }
 
 /**
@@ -204,6 +215,8 @@ export class BuildError extends Error implements HasBuildTrace {
 	}
 }
 
+const RESOLVED_VOID_PROMISE = Promise.resolve();
+
 /**
  * The thing that builds.
  * After constructing, call `build( targetName )` to build a specific target,
@@ -218,9 +231,10 @@ export default class Builder implements MiniBuilder {
 	protected defaultTargetNames:string[];
 	protected buildRules : {[targetName:string]: BuildRule};
 	protected logger:Logger;
+	protected buildScriptName:string;
 
 	protected buildPromises:{[name:string]: Promise<BuildResult>} = {};
-	protected allBuildPromisesSettled : Promise<unknown> = Promise.resolve();
+	protected allBuildPromisesSettled : Promise<unknown> = RESOLVED_VOID_PROMISE;
 	protected isShuttingDown = false;
 	
 	public constructor(opts:BuilderOptions={}) {
@@ -228,6 +242,7 @@ export default class Builder implements MiniBuilder {
 		this.logger = opts.logger || NULL_LOGGER;
 		this.globalPrereqs = opts.globalPrerequisiteNames || [];
 		this.defaultTargetNames = opts.defaultTargetNames || [];
+		this.buildScriptName = opts.buildScriptName || "(build script)";
 	}
 	
 	/** Here so you can override it */
@@ -397,74 +412,127 @@ export default class Builder implements MiniBuilder {
 	 * Process command-line arguments.
 	 * Returns a rejected promise if there are problems.
 	 */
-	public processArgsAndBuild(args:string[]):Promise<void> {
-		let buildList = [];
-		let operation = 'build';
+	public parseCommandLineArgs(args:string[]):Promise<BuildParameters> {
+		let targetNames = [];
+		let buildOperation : BuildOperationName = 'build';
+		let targetsSpecifiedVia = "command-line";
 		let verbosity = 100;
 		for( let i=0; i<args.length; ++i ) {
 			const arg = args[i];
 			if( arg == '--list-targets' ) {
-				operation = 'list-targets';
+				buildOperation = 'list-targets';
 			} else if( arg == '--describe-targets' ) {
-				operation = 'describe-targets';
+				buildOperation = 'describe-targets';
+			} else if( arg == '--help' ) {
+				buildOperation = 'print-help';
 			} else if( arg == '-v' ) {
 				verbosity = 200;
 			} else if( arg == '-q' ) {
 				verbosity = 0;
 			} else {
 				// Make tab-completing on Windows not screw us all up!
-				buildList.push(arg.replace(/\\/g,'/'));
+				targetNames.push(arg.replace(/\\/g,'/'));
 			}
 		}
-		
+
 		const configuredLogger = this.logger;
+		let effectiveLogger : Logger;
 		if( verbosity >= 200 ) {
-			this.logger = configuredLogger;
+			effectiveLogger = configuredLogger;
 		} else if( verbosity >= 100 ) {
-			this.logger = {
+			effectiveLogger = {
 				log: () => {},
 				warn: configuredLogger.warn,
 				error: configuredLogger.error,
 			}
 		} else {
-			this.logger = NULL_LOGGER;
+			effectiveLogger = NULL_LOGGER;
 		}
 		
-		if( operation == 'list-targets' ) {
+		if( targetNames.length == 0 ) {
+			targetNames = this.defaultTargetNames;
+			targetsSpecifiedVia = "(default targets)";
+		}
+
+		return Promise.resolve({
+			buildOperation,
+			targetNames,
+			targetsSpecifiedVia,
+			logger: effectiveLogger,
+		})
+	}
+
+	public run(buildParams:BuildParameters) : Promise<void> {
+		this.logger = buildParams.logger;
+		switch( buildParams.buildOperation ) {
+		case 'list-targets':
 			return this.fetchAllBuildRules().then( (targets):void => {
 				for( const n in targets ) console.log(n);
 			});
-		} else if( operation == 'describe-targets' ) {
+		case 'describe-targets':
 			return this.fetchAllBuildRules().then( (targets):void => {
-				// TODO: Print prettier and allowing for multi-line descriptions
+				let lengthOfLongestTargetName = 0;
+				for( const targetName in targets ) {
+					lengthOfLongestTargetName = Math.max(targetName.length, lengthOfLongestTargetName);
+				}
+				const nlReplacement = "\n" + " ".repeat(lengthOfLongestTargetName)+" ; ";
 				for( const targetName in targets ) {
 					const target = targets[targetName];
 					let text = targetName;
-					if( target.description ) text += " ; " + target.description;
+					if( target.description ) text += " ".repeat(lengthOfLongestTargetName-targetName.length)+" ; " + target.description.replaceAll("\n", nlReplacement);
 					console.log(text);
 				}
+				if( this.defaultTargetNames.length > 0 ) {
+					console.log("");
+					console.log(`Default targets: ${this.defaultTargetNames.join(' ')}`);
+				} else {
+					console.log("");
+					console.log("There are no default targets");
+				}
 			});
-		} else if( operation == 'build' ) {
-			let specifiedVia = "(command-line)";
-			if( buildList.length == 0 ) {
-				buildList = this.defaultTargetNames;
-				if( buildList.length == 0 ) {
+		case 'build':
+			{
+				if( buildParams.targetNames.length == 0 ) {
 					this.logger.warn("No build target build targets.  Try with --list-targets.");
 					return Promise.resolve();
 				}
-				specifiedVia = "(default targets)"
+				const buildProms = [];
+				for( const targetName of buildParams.targetNames ) {
+					buildProms.push(this.build(targetName, {buildRuleTrace: [buildParams.targetsSpecifiedVia]}));
+				}
+				return Promise.all(buildProms).then( () => {} );
 			}
-			const buildProms = [];
-			for( const i in buildList ) {
-				buildProms.push(this.build(buildList[i], {buildRuleTrace: [specifiedVia]}));
+		case 'print-help':
+			{
+				console.log(`Usage:`);
+				console.log(`  ${this.buildScriptName} --help             ; print this text`);
+				console.log(`  ${this.buildScriptName} --list-targets     ; list targets`);
+				console.log(`  ${this.buildScriptName} --describe-targets ; list targets with more details`);
+				console.log(`  ${this.buildScriptName} [-q|-v] <target>*  ; build targets, quietly or verbosely`);
+				return Promise.resolve();
 			}
-			return Promise.all(buildProms).then( () => {} );
-		} else {
-			return Promise.reject(new Error("Bad operation: '"+operation+"'"));
+		default:
+			return Promise.reject(new Error("Bad operation: '"+(buildParams.buildOperation as BuildOperationName)+"'"));
 		}
 	}
 
+	/**
+	 * Parse command-line options and do the build, all in one step.
+	 * @param args command-line arguments (e.g. Deno.args; not including the program or script name)
+	 * @returns 
+	 * @deprecated You probably want processCommandLine(...) instead, or parseCommandLineArgs(...).then(params => run(params)).
+	 */
+	public processArgsAndBuild(args:string[]):Promise<void> {
+		return this.parseCommandLineArgs(args).then(buildParams => this.run(buildParams));
+	}
+
+	/** Return a promise that resolves when all build tasks have settled */
 	public join() : Promise<void> {
+		if( this.allBuildPromisesSettled === RESOLVED_VOID_PROMISE ) {
+			// Short-circuit to avoid logging when no building actually happened
+			return RESOLVED_VOID_PROMISE;
+		}
+
 		this.logger.log("Waiting for any running tasks to settle...");
 		const settlePromise = this.allBuildPromisesSettled;
 		return settlePromise.then( () => {
@@ -475,16 +543,17 @@ export default class Builder implements MiniBuilder {
 			this.logger.log("All build tasks settled.");
 		});
 	}
-	
+
 	/**
-	 * Process command-line options,
-	 * duimping any error messages to console.error and
-	 * returning the appropriate exit code given the result of trying to build,
-	 * which it is recommended you pass to Deno.exit.
+	 * Takes promise returned by run(), waits for the result,
+	 * prints any appropriate output,
+	 * waits for all tasks to finish,
+	 * and returns a number appropriate for a process exit code.
+	 * @param res
 	 */
-	public processCommandLine(argv:string[]) : Promise<number> {
-		return this.processArgsAndBuild(argv).then( () => {
-			this.logger.log("Build completed");
+	public runResultToCommandLineResult(res:Promise<void>) : Promise<number> {
+		return res.then( () => {
+			if( this.allBuildPromisesSettled !== RESOLVED_VOID_PROMISE ) this.logger.log("Build completed");
 			return 0;
 		}, (err:Error) => {
 			if( hasBuildTrace(err) ) {
@@ -499,5 +568,13 @@ export default class Builder implements MiniBuilder {
 			this.isShuttingDown = true;
 			return this.join()
 		});
+	}
+	
+	/**
+	 * Parse command-line options, execute specified tasks, print results,
+	 * wait for outstanding tasks to settle, and returns an appropriate exit code.
+	 */
+	public processCommandLine(args:string[]) : Promise<number> {
+		return this.parseCommandLineArgs(args).then(buildParams => this.runResultToCommandLineResult(this.run(buildParams)));
 	}
 }

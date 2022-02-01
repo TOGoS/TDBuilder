@@ -2,7 +2,7 @@
 
 Configured by builder construction or by command-line option.
 
-*** TODO Separate parsing of command-line options from running the build
+*** DONE Separate parsing of command-line options from running the build
 
 One use case: I want access to the logger in order to set some other things up
 before it starts building stuff!
