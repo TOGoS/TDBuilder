@@ -1,4 +1,4 @@
-*** TODO '--serial' mode - run tasks one-at-a-time
+*** DONE '--serial' mode - run tasks one-at-a-time
 
 Configured by builder construction or by command-line option.
 
