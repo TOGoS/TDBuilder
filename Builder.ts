@@ -542,10 +542,10 @@ export default class Builder implements MiniBuilder {
 		case 'print-help':
 			{
 				console.log(`Usage:`);
-				console.log(`  ${this.buildScriptName} --help             ; print this text`);
-				console.log(`  ${this.buildScriptName} --list-targets     ; list targets`);
-				console.log(`  ${this.buildScriptName} --describe-targets ; list targets with more details`);
-				console.log(`  ${this.buildScriptName} <options> <target>*  ; build targets, quietly or verbosely`);
+				console.log(`  ${this.buildScriptName} --help              ; print this text`);
+				console.log(`  ${this.buildScriptName} --list-targets      ; print target names, one-per-line`);
+				console.log(`  ${this.buildScriptName} --describe-targets  ; print target descriptions`);
+				console.log(`  ${this.buildScriptName} <options> <target>* ; build targets`);
 				console.log(`Build options:`);
 				console.log(`  -q         ; quiet; only errors/warnings will be printed`);
 				console.log(`  -v         ; verbose logging`);
