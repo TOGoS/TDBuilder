@@ -1,4 +1,4 @@
-*** TODO 'serial' mode - run tasks one-at-a-time
+*** TODO '--serial' mode - run tasks one-at-a-time
 
 Configured by builder construction or by command-line option.
 
@@ -6,6 +6,13 @@ Configured by builder construction or by command-line option.
 
 One use case: I want access to the logger in order to set some other things up
 before it starts building stuff!
+
+*** TODO Separate configuration from construction of Builder *even more*
+
+i.e. have a builder builder, lmao.
+
+Result of ~parseCommandLineArgs~ should be used to create the builder,
+rather than mutate it when passed to ~run~, which is kinda weird.
 
 *** TODO Ability to use contexts with more stuff
 
@@ -34,8 +41,13 @@ instead of ~invoke~, similar to how ~cmd~ can be specified in stead of ~invoke~.
 Actually, ~cmd~ is often insufficient, so should probably be removed as a special case.
 
 Perhaps build rules could be (almost) arbitrary objects, and handlers could be registered
-to resolve them.
+to resolve them.  Or, taking it a different direction, more smarts could be put into build rules,
+which would essentially be functions that calculate the latest version of a target,
+explicitly asking the builder to build any prerequisites.
+The builder would only be acting as a cache.
 
 *** TODO Easy way to recognize updated-ness of a file by a sidecar file
 
 *** TODO Easy way to indicate when multiple files are updated by the same build rule
+
+*** TODO Allow build rules to be generated at runtime

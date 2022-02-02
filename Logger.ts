@@ -8,12 +8,11 @@
 }
 
 export const VERBOSITY_SILENT   = 0;
-export const VERBOSITY_ERRORS   = 1;
-export const VERBOSITY_WARNINGS = 2;
-export const VERBOSITY_INFO     = 3;
-export const VERBOSITY_DEBUG    = 4;
+export const VERBOSITY_ERRORS   = 50;
+export const VERBOSITY_WARNINGS = 100;
+export const VERBOSITY_INFO     = 200;
+export const VERBOSITY_DEBUG    = 300;
 
-/*
 export class LevelFilteringLogger implements Logger {
 	constructor( protected backingLogger:Logger, protected verbosity:number ) { }
 	
@@ -35,7 +34,6 @@ export class LevelFilteringLogger implements Logger {
 		this.backingLogger.log( message, ...etc );
 	}
 }
-*/
 
 /** A logger that ignores everything */
 export const NULL_LOGGER:Logger = {

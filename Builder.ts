@@ -1,5 +1,5 @@
 import { mtimeR, touchDir, makeRemoved } from './FSUtil.ts';
-import Logger, {NULL_LOGGER} from './Logger.ts';
+import Logger, {LevelFilteringLogger, NULL_LOGGER, VERBOSITY_ERRORS, VERBOSITY_INFO, VERBOSITY_WARNINGS} from './Logger.ts';
 
 export type BuildResult = { mtime: number };
 
@@ -169,24 +169,30 @@ function getFailureFileAction(rule:BuildRule) : FailureFileAction {
  */
 export interface BuilderOptions {
 	/** BuildRules, keyed by target name */
-	rules? : {[targetName:string]: BuildRule},
+	rules? : {[targetName:string]: BuildRule};
 	/** The logger that the builder will use.  Defaults to `NULL_LOGGER` */
-	logger? : Logger,
+	logger? : Logger;
 	/** List of targets that should always be built */
-	globalPrerequisiteNames? : string[],
+	globalPrerequisiteNames? : string[];
 	/** Names of targets that should be assumed when none are specified on the command-line */
-	defaultTargetNames? : string[],
+	defaultTargetNames? : string[];
 	/** How to refer to the command-line script that is calling Builder?  For --help purposes. */
-	buildScriptName? : string,
+	buildScriptName? : string;
+	///** Allowed concurrency modes; default is the first in the list, and the default list is ['parallel','serial'] */
+	//allowedConcurrencyModes? : ConcurrencyMode[];
+	/** Default concurrency mode, 'parallel' or 'serial'.  May be overridden to 'serial' by a command-line option. */
+	concurrencyMode? : ConcurrencyMode;
 }
 
 type BuildOperationName = "build"|"describe-targets"|"list-targets"|"print-help";
+type ConcurrencyMode = "parallel"|"serial";
 
 export interface BuildParameters {
-	buildOperation: BuildOperationName,
-	targetNames: string[],
-	targetsSpecifiedVia: string,
-	logger: Logger,
+	buildOperation: BuildOperationName;
+	targetNames: string[];
+	targetsSpecifiedVia: string;
+	verbosity: number;
+	concurrencyMode? : ConcurrencyMode;
 }
 
 /**
@@ -230,19 +236,22 @@ export default class Builder implements MiniBuilder {
 	protected globalPrereqs:string[];
 	protected defaultTargetNames:string[];
 	protected buildRules : {[targetName:string]: BuildRule};
-	protected logger:Logger;
+	protected configuredLogger:Logger;
 	protected buildScriptName:string;
 
+	protected logger:Logger; // 'effective logger' - takes verbosity into account
 	protected buildPromises:{[name:string]: Promise<BuildResult>} = {};
 	protected allBuildPromisesSettled : Promise<unknown> = RESOLVED_VOID_PROMISE;
+	protected concurrencyMode : ConcurrencyMode;
 	protected isShuttingDown = false;
 	
 	public constructor(opts:BuilderOptions={}) {
 		this.buildRules = opts.rules || {};
-		this.logger = opts.logger || NULL_LOGGER;
+		this.logger = this.configuredLogger = opts.logger || NULL_LOGGER;
 		this.globalPrereqs = opts.globalPrerequisiteNames || [];
 		this.defaultTargetNames = opts.defaultTargetNames || [];
 		this.buildScriptName = opts.buildScriptName || "(build script)";
+		this.concurrencyMode = opts.concurrencyMode ?? "parallel";
 	}
 	
 	/** Here so you can override it */
@@ -384,12 +393,27 @@ export default class Builder implements MiniBuilder {
 			mtime: targetMtime
 		};
 	}
+
+	protected preBuild(targetName:string) : Promise<void> {
+		const waitPromise = this.concurrencyMode == "serial" ? this.allBuildPromisesSettled.catch(_=>{}).then(() => {
+			this.logger.log(`All previously-queued targets finished; now we can build ${targetName}`);
+		}) : RESOLVED_VOID_PROMISE;
+		return waitPromise.then(() => {
+			if( this.isShuttingDown ) {
+				this.logger.log(`Builder shutting down; refusing to start task to build ${targetName}`);
+				return Promise.reject(new Error("Aborted due to builder shutdown"));
+			}
+			RESOLVED_VOID_PROMISE;
+		});
+	}
 	
 	public build( targetName:string, ctx:MiniBuildContext ) : Promise<BuildResult> {
 		if( this.buildPromises[targetName] != undefined ) return this.buildPromises[targetName];
-
-		if( this.isShuttingDown ) return Promise.reject(`Builder shutting down; refusing to start task to build ${targetName}`)
 		
+		// HONK HONK!
+		// This will deadlock if any build target explicitly calls another.
+		// Must not wait unless in a context where we are not already in an invoke() function.
+		//const bp = this.buildPromises[targetName] = this.preBuild(targetName).then(() => this.fetchBuildRuleForTarget(targetName)).then( rule => {
 		const bp = this.buildPromises[targetName] = this.fetchBuildRuleForTarget(targetName).then( rule => {
 			if( rule == null ) {
 				return mtimeR(targetName, "error").then( mtime => {
@@ -416,7 +440,9 @@ export default class Builder implements MiniBuilder {
 		let targetNames = [];
 		let buildOperation : BuildOperationName = 'build';
 		let targetsSpecifiedVia = "command-line";
-		let verbosity = 100;
+		let concurrencyMode = this.concurrencyMode;
+		let verbosity = VERBOSITY_WARNINGS;
+		let m : RegExpExecArray|null;
 		for( let i=0; i<args.length; ++i ) {
 			const arg = args[i];
 			if( arg == '--list-targets' ) {
@@ -425,28 +451,22 @@ export default class Builder implements MiniBuilder {
 				buildOperation = 'describe-targets';
 			} else if( arg == '--help' ) {
 				buildOperation = 'print-help';
+			} else if( arg == '--serial' ) {
+				concurrencyMode = "serial";
+			} else if( arg == '--parallel' ) {
+				concurrencyMode = "parallel";
 			} else if( arg == '-v' ) {
-				verbosity = 200;
+				verbosity = VERBOSITY_INFO;
 			} else if( arg == '-q' ) {
-				verbosity = 0;
+				verbosity = VERBOSITY_ERRORS;
+			} else if( (m = /--verbosity=(\d+)$/.exec(arg)) != null ) {
+				verbosity = +m[1];
+			} else if( arg.startsWith("-") ) {
+				return Promise.reject(new Error(`Unrecognized argument: ${arg}`));
 			} else {
 				// Make tab-completing on Windows not screw us all up!
 				targetNames.push(arg.replace(/\\/g,'/'));
 			}
-		}
-
-		const configuredLogger = this.logger;
-		let effectiveLogger : Logger;
-		if( verbosity >= 200 ) {
-			effectiveLogger = configuredLogger;
-		} else if( verbosity >= 100 ) {
-			effectiveLogger = {
-				log: () => {},
-				warn: configuredLogger.warn,
-				error: configuredLogger.error,
-			}
-		} else {
-			effectiveLogger = NULL_LOGGER;
 		}
 		
 		if( targetNames.length == 0 ) {
@@ -458,12 +478,15 @@ export default class Builder implements MiniBuilder {
 			buildOperation,
 			targetNames,
 			targetsSpecifiedVia,
-			logger: effectiveLogger,
+			verbosity,
+			concurrencyMode,
 		})
 	}
 
 	public run(buildParams:BuildParameters) : Promise<void> {
-		this.logger = buildParams.logger;
+		this.logger = new LevelFilteringLogger(this.configuredLogger, buildParams.verbosity);
+		if( buildParams.concurrencyMode ) this.concurrencyMode = buildParams.concurrencyMode;
+
 		switch( buildParams.buildOperation ) {
 		case 'list-targets':
 			return this.fetchAllBuildRules().then( (targets):void => {
@@ -491,15 +514,13 @@ export default class Builder implements MiniBuilder {
 				}
 			});
 		case 'build':
+			if( buildParams.targetNames.length == 0 ) {
+				this.logger.warn("No build target build targets.  Try with --list-targets.");
+				return Promise.resolve();
+			}
 			{
-				if( buildParams.targetNames.length == 0 ) {
-					this.logger.warn("No build target build targets.  Try with --list-targets.");
-					return Promise.resolve();
-				}
-				const buildProms = [];
-				for( const targetName of buildParams.targetNames ) {
-					buildProms.push(this.build(targetName, {buildRuleTrace: [buildParams.targetsSpecifiedVia]}));
-				}
+				const ctx = {buildRuleTrace: [buildParams.targetsSpecifiedVia]};
+				const buildProms = buildParams.targetNames.map(targetName => this.build(targetName, ctx));
 				return Promise.all(buildProms).then( () => {} );
 			}
 		case 'print-help':
@@ -508,7 +529,12 @@ export default class Builder implements MiniBuilder {
 				console.log(`  ${this.buildScriptName} --help             ; print this text`);
 				console.log(`  ${this.buildScriptName} --list-targets     ; list targets`);
 				console.log(`  ${this.buildScriptName} --describe-targets ; list targets with more details`);
-				console.log(`  ${this.buildScriptName} [-q|-v] <target>*  ; build targets, quietly or verbosely`);
+				console.log(`  ${this.buildScriptName} <options> <target>*  ; build targets, quietly or verbosely`);
+				console.log(`Build options:`);
+				console.log(`  -q         ; quiet; only errors/warnings will be printed`);
+				console.log(`  -v         ; verbose logging`);
+				console.log(`  --serial   ; build only one target at a time`);
+				console.log(`  --parallel ; run build functions in parallel`);
 				return Promise.resolve();
 			}
 		default:
