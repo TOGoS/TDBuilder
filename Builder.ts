@@ -77,6 +77,16 @@ export interface BuildRule {
 	isDirectory?: boolean;
 }
 
+/** Remove duplicates from a list, keeping the first occurrence */
+function deduplicate<T>(stuff:T[]) : T[] {
+	const alreadyMentioned = new Set<T>();
+	return stuff.filter( thing => {
+		if( alreadyMentioned.has(thing) ) return false;
+		alreadyMentioned.add(thing);
+		return true;
+	});
+}
+
 function prettyCmdArg(arg:string) : string {
 	if( /^[A-Za-z0-9_\+\-\.]+$/.exec(arg) ) {
 		return arg;
@@ -343,16 +353,7 @@ export default class Builder implements MiniBuilder {
 			return Promise.reject(e);
 		});
 		
-		let prereqsBuilt = Promise.resolve(-Infinity);
-		for( const prereqName of prereqNames ) {
-			const prereqBuildPromise = this.build(prereqName, {buildRuleTrace});
-			prereqsBuilt = prereqsBuilt.then(async latest => {
-				const prereqArtifact = await prereqBuildPromise;
-				return Math.max(latest, prereqArtifact.mtime);
-			});
-		}
-		
-		const latestPrereqMtime = await prereqsBuilt;
+		const latestPrereqMtime = (await this.buildAll(prereqNames, ctx)).mtime;
 		
 		if( targetMtime == -Infinity || latestPrereqMtime > targetMtime ) {
 			const buildFunction = getRuleBuildFunction(rule, ctx);
@@ -394,26 +395,9 @@ export default class Builder implements MiniBuilder {
 		};
 	}
 
-	protected preBuild(targetName:string) : Promise<void> {
-		const waitPromise = this.concurrencyMode == "serial" ? this.allBuildPromisesSettled.catch(_=>{}).then(() => {
-			this.logger.log(`All previously-queued targets finished; now we can build ${targetName}`);
-		}) : RESOLVED_VOID_PROMISE;
-		return waitPromise.then(() => {
-			if( this.isShuttingDown ) {
-				this.logger.log(`Builder shutting down; refusing to start task to build ${targetName}`);
-				return Promise.reject(new Error("Aborted due to builder shutdown"));
-			}
-			RESOLVED_VOID_PROMISE;
-		});
-	}
-	
 	public build( targetName:string, ctx:MiniBuildContext ) : Promise<BuildResult> {
 		if( this.buildPromises[targetName] != undefined ) return this.buildPromises[targetName];
 		
-		// HONK HONK!
-		// This will deadlock if any build target explicitly calls another.
-		// Must not wait unless in a context where we are not already in an invoke() function.
-		//const bp = this.buildPromises[targetName] = this.preBuild(targetName).then(() => this.fetchBuildRuleForTarget(targetName)).then( rule => {
 		const bp = this.buildPromises[targetName] = this.fetchBuildRuleForTarget(targetName).then( rule => {
 			if( rule == null ) {
 				return mtimeR(targetName, "error").then( mtime => {
@@ -426,10 +410,35 @@ export default class Builder implements MiniBuilder {
 				return this.buildTarget(targetName, rule, ctx.buildRuleTrace);
 			}
 		});
-
+		
 		this.allBuildPromisesSettled = this.allBuildPromisesSettled.then(() => bp.then(_ => {}, _ => {}));
-
+		
 		return bp;
+	}
+
+	public buildAll( targetNames:string[], ctx:MiniBuildContext ) : Promise<BuildResult> {
+		targetNames = deduplicate(targetNames);
+		
+		if( this.concurrencyMode == 'serial' ) {
+			let p : Promise<BuildResult> = Promise.resolve({mtime: -Infinity});
+			for( const targetName of targetNames ) {
+				p = p.then(latest => {
+					//this.logger.log(`builtAll: starting build for ${targetName}...`);
+					return this.build(targetName, ctx).then( result => {
+						//this.logger.log(`buildAll: ${targetName} built`);
+						return { mtime: Math.max(latest.mtime, result.mtime) };
+					});
+				});
+			}
+			return p;
+		} else {
+			//this.logger.log(`buildAll: Starting parallel builds for ${targetNames.join(', ')}`);
+			return Promise.all(targetNames.map(tn => this.build(tn, ctx))).then( results => {
+				return results.reduce( (a,b) => ({
+					mtime: Math.max(a.mtime, b.mtime)
+				}), {mtime: -Infinity})
+			})
+		}
 	}
 	
 	/**
@@ -485,7 +494,15 @@ export default class Builder implements MiniBuilder {
 
 	public run(buildParams:BuildParameters) : Promise<void> {
 		this.logger = new LevelFilteringLogger(this.configuredLogger, buildParams.verbosity);
-		if( buildParams.concurrencyMode ) this.concurrencyMode = buildParams.concurrencyMode;
+		if( buildParams.concurrencyMode ) {
+			if( this.concurrencyMode == 'serial' && buildParams.concurrencyMode == 'parallel' ) {
+				// TODO: separate default vs allowed concurrency modes.
+				this.logger.warn(`Caller indicated they would like --parallel, but this builder was configured as serial,`);
+				this.logger.warn(`which may be for important reasons; ignoring --parallel option.`);
+			} else {
+				this.concurrencyMode = buildParams.concurrencyMode;
+			}
+		}
 
 		switch( buildParams.buildOperation ) {
 		case 'list-targets':
@@ -520,8 +537,7 @@ export default class Builder implements MiniBuilder {
 			}
 			{
 				const ctx = {buildRuleTrace: [buildParams.targetsSpecifiedVia]};
-				const buildProms = buildParams.targetNames.map(targetName => this.build(targetName, ctx));
-				return Promise.all(buildProms).then( () => {} );
+				return this.buildAll(buildParams.targetNames, ctx).then( () => {} );
 			}
 		case 'print-help':
 			{
