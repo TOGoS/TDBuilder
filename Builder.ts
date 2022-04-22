@@ -1,25 +1,30 @@
 import { mtimeR, touchDir, makeRemoved } from './FSUtil.ts';
 import Logger, {LevelFilteringLogger, NULL_LOGGER, VERBOSITY_ERRORS, VERBOSITY_INFO, VERBOSITY_WARNINGS} from './Logger.ts';
 
-export type BuildResult = { mtime: number };
+export type TargetName = string;
+
+export interface BuildResult {
+	targetMtimes?: Map<TargetName, number>;
+	mtime: number;
+}
 
 export type BuildFunction = (ctx:BuildContext) => Promise<void>;
 
 export type BuildFunctionTransformer = (cb:BuildFunction) => BuildFunction;
 
 export interface MiniBuildContext {
-	buildRuleTrace: string[];
+	buildRuleTrace: TargetName[];
 }
 
 export interface MiniBuilder {
-	build( targetName:string, ctx:MiniBuildContext ) : Promise<BuildResult>;
+	build( targetName:TargetName, ctx:MiniBuildContext ) : Promise<BuildResult>;
 }
 
 export interface BuildContext extends MiniBuildContext {
 	builder: MiniBuilder;
 	logger: Logger;
-	prereqNames: string[];
-	targetName: string;
+	prereqNames: TargetName[];
+	targetName: TargetName;
 }
 
 type TargetTypeName = "directory"|"file"|"phony"|"auto";
@@ -353,9 +358,28 @@ export default class Builder implements MiniBuilder {
 			return Promise.reject(e);
 		});
 		
-		const latestPrereqMtime = (await this.buildAll(prereqNames, ctx)).mtime;
-		
-		if( targetMtime == -Infinity || latestPrereqMtime > targetMtime ) {
+		const prereqBuildResult = await this.buildAll(prereqNames, ctx);
+
+		let needRebuild = false;
+		if( targetMtime == -Infinity ) {
+			this.logger.log(`${targetName} must be built because its effective mtime is -Infinity`)
+			needRebuild = true;
+		} else if( prereqBuildResult.mtime > targetMtime ) {
+			if( prereqBuildResult.targetMtimes ) {
+				const newerPrereqs : TargetName[] = [];
+				for( const [prereqName,prereqMtime] of prereqBuildResult.targetMtimes ) {
+					if( prereqMtime > targetMtime ) {
+						newerPrereqs.push(prereqName);
+					}
+				}
+				this.logger.log(`${targetName} must be built because the following prereqs are newer: ${newerPrereqs.join(', ')}`);
+			} else {
+				this.logger.log(`${targetName} must be built because some prereqs are newer`)
+			}
+			needRebuild = true;
+		}
+
+		if( needRebuild ) {
 			const buildFunction = getRuleBuildFunction(rule, ctx);
 			const buildWrapper = getRuleBuildFunctionTransformer(rule, ctx);
 			const wrappedBuildFunction = buildWrapper(async (ctx:BuildContext) => {
@@ -418,6 +442,7 @@ export default class Builder implements MiniBuilder {
 
 	public buildAll( targetNames:string[], ctx:MiniBuildContext ) : Promise<BuildResult> {
 		targetNames = deduplicate(targetNames);
+		const targetMtimes = new Map<TargetName, number>();
 		
 		if( this.concurrencyMode == 'serial' ) {
 			let p : Promise<BuildResult> = Promise.resolve({mtime: -Infinity});
@@ -425,16 +450,25 @@ export default class Builder implements MiniBuilder {
 				p = p.then(latest => {
 					//this.logger.log(`builtAll: starting build for ${targetName}...`);
 					return this.build(targetName, ctx).then( result => {
-						//this.logger.log(`buildAll: ${targetName} built`);
-						return { mtime: Math.max(latest.mtime, result.mtime) };
+						targetMtimes.set(targetName, result.mtime);
+						return {
+							targetMtimes,
+							mtime: Math.max(latest.mtime, result.mtime)
+						};
 					});
 				});
 			}
 			return p;
 		} else {
 			//this.logger.log(`buildAll: Starting parallel builds for ${targetNames.join(', ')}`);
-			return Promise.all(targetNames.map(tn => this.build(tn, ctx))).then( results => {
+			return Promise.all(
+				targetNames.map(targetName => this.build(targetName, ctx).then(result => {
+					targetMtimes.set(targetName, result.mtime);
+					return result;
+				}))
+			).then( results => {
 				return results.reduce( (a,b) => ({
+					targetMtimes,
 					mtime: Math.max(a.mtime, b.mtime)
 				}), {mtime: -Infinity})
 			})
