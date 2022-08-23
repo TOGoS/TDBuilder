@@ -10,6 +10,15 @@ export function mkParentDirs( file:FilePath ):Promise<unknown> {
 	}
 }
 
+export function splitPath(path:string, defaultDir=".") : {dir:string, name:string} {
+	const li = path.lastIndexOf('/');
+	if( li == -1 ) {
+		return {dir: defaultDir, name: path};
+	} else {
+		return {dir: path.substring(0,li), name: path.substring(li+1)};
+	}
+}
+
 /*
 Too unstable!
 export function touch( fileOrDir:FilePath ) : Promise<void> {
@@ -46,7 +55,16 @@ export function cpRReplacing( src:FilePath, dest:FilePath ):Promise<unknown> {
 	return Deno.remove(dest, {recursive:true}).then( () => cpR(src,dest) );
 }
 
-export async function mtimeR(path:string, onNotFound:number|"error", returnInfinityIfGtThis=Infinity) : Promise<number> {
+export async function mtimeR(
+	path:string, onNotFound:number|"error",
+	returnInfinityIfGtThis=Infinity,
+	overrideFunction? : (path:string) => Promise<number|undefined>
+) : Promise<number> {
+	if( overrideFunction ) {
+		const result = await overrideFunction(path);
+		if( result != undefined ) return result;
+	}
+
 	let rootStat : Deno.FileInfo;
 	try {
 		rootStat = await Deno.stat(path);
@@ -65,7 +83,7 @@ export async function mtimeR(path:string, onNotFound:number|"error", returnInfin
 				console.info(`latestMtime: Info: Deno.readDir results include '${entry.name}'`);
 				continue;
 			}
-			dp = dp.then(() => mtimeR(path + "/" + entry.name, onNotFound, returnInfinityIfGtThis)).then(mt => {
+			dp = dp.then(() => mtimeR(path + "/" + entry.name, onNotFound, returnInfinityIfGtThis, overrideFunction)).then(mt => {
 				latest = Math.max(latest, mt);
 			});
 		}

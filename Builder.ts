@@ -179,6 +179,8 @@ function getFailureFileAction(rule:BuildRule) : FailureFileAction {
 	return rule.targetType == "file" ? "delete" : "keep";
 }
 
+export type AlternateMtimeFunction = (this:void, path:string) => Promise<number|undefined>;
+
 /**
  * Builder constructor options.
  */
@@ -197,6 +199,15 @@ export interface BuilderOptions {
 	//allowedConcurrencyModes? : ConcurrencyMode[];
 	/** Default concurrency mode, 'parallel' or 'serial'.  May be overridden to 'serial' by a command-line option. */
 	concurrencyMode? : ConcurrencyMode;
+	/**
+	 * Overrides method of determining modification time for any
+	 * non-phony target or file or subdirectory within a directory target.
+	 * If this is undefined, or in any case where it returns undefined,
+	 * FSUtil.mtimeR is used.
+	 * 
+	 * To force a target or file to be treated as just updated, return Infinity.
+	 */
+	mtimeFunction? : AlternateMtimeFunction;
 }
 
 type BuildOperationName = "build"|"describe-targets"|"list-targets"|"print-help";
@@ -253,6 +264,7 @@ export default class Builder implements MiniBuilder {
 	protected buildRules : {[targetName:string]: BuildRule};
 	protected configuredLogger:Logger;
 	protected buildScriptName:string;
+	protected mtimeFunction? : (this:void, path:string) => Promise<number|undefined>;
 
 	protected logger:Logger; // 'effective logger' - takes verbosity into account
 	protected buildPromises:{[name:string]: Promise<BuildResult>} = {};
@@ -267,6 +279,7 @@ export default class Builder implements MiniBuilder {
 		this.defaultTargetNames = opts.defaultTargetNames || [];
 		this.buildScriptName = opts.buildScriptName || "(build script)";
 		this.concurrencyMode = opts.concurrencyMode ?? "parallel";
+		this.mtimeFunction = opts.mtimeFunction;
 	}
 	
 	/** Here so you can override it */
@@ -353,7 +366,7 @@ export default class Builder implements MiniBuilder {
 		};
 
 		const targetType = getRuleTargetType(rule, targetName, ctx);
-		let targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity).catch( (e:Error) => {
+		let targetMtime = targetType == "phony" ? -Infinity : await mtimeR(targetName, -Infinity, Infinity, this.mtimeFunction).catch( (e:Error) => {
 			if( e.name == "NotFound" ) return -Infinity;
 			return Promise.reject(e);
 		});
@@ -409,7 +422,7 @@ export default class Builder implements MiniBuilder {
 			});
 			await wrappedBuildFunction(ctx);
 			
-			targetMtime = targetType == "phony" ? Infinity : await mtimeR(targetName, -Infinity);
+			targetMtime = targetType == "phony" ? Infinity : await mtimeR(targetName, -Infinity, Infinity, this.mtimeFunction);
 		} else {
 			this.logger.log(targetName+" is already up-to-date");
 		}
@@ -424,7 +437,7 @@ export default class Builder implements MiniBuilder {
 		
 		const bp = this.buildPromises[targetName] = this.fetchBuildRuleForTarget(targetName).then( rule => {
 			if( rule == null ) {
-				return mtimeR(targetName, "error").then( mtime => {
+				return mtimeR(targetName, "error", Infinity, this.mtimeFunction).then( mtime => {
 					this.logger.log(targetName+" exists but has no build rule; assuming up-to-date");
 					return {mtime};
 				}, _err => {
