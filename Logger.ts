@@ -1,7 +1,7 @@
 /**
  * Console-compatible logging interface.
  */
- interface Logger {
+export interface Logger {
    error(message?: unknown, ...optionalParams: unknown[]): void;
 	warn(message?: unknown, ...optionalParams: unknown[]): void;
    log(message?: unknown, ...optionalParams: unknown[]): void;
